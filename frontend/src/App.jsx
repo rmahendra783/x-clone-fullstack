@@ -86,12 +86,26 @@ export default function App() {
     }
   };
 
-  // POST Request: Like tweet with optimistic UI update and fallback
+  // POST Request: Toggle Like/Unlike with optimistic update
   const handleLikeTweet = async (id) => {
-    // 1. Optimistic UI update: instantly increment count on the client
+    const targetTweet = tweets.find((t) => t.id === id);
+    if (!targetTweet) return;
+
+    const isCurrentlyLiked = targetTweet.liked_by_current_user || false;
+    const optimisticCount = isCurrentlyLiked 
+      ? Math.max(0, (targetTweet.likes_count || 0) - 1) 
+      : (targetTweet.likes_count || 0) + 1;
+
+    // Optimistic UI update: instantly toggle icon color and count
     setTweets(
       tweets.map((tweet) =>
-        tweet.id === id ? { ...tweet, likes_count: (tweet.likes_count || 0) + 1 } : tweet
+        tweet.id === id
+          ? {
+              ...tweet,
+              likes_count: optimisticCount,
+              liked_by_current_user: !isCurrentlyLiked,
+            }
+          : tweet
       )
     );
 
@@ -99,16 +113,30 @@ export default function App() {
       const res = await fetch(`${API_URL}/${id}/like`, {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
+        body: JSON.stringify({ username: username }),
       });
 
-      if (!res.ok) {
-        // Rollback state if server returns an error
+      if (res.ok) {
+        const data = await res.json();
+        setTweets((prev) =>
+          prev.map((tweet) =>
+            tweet.id === id
+              ? {
+                  ...tweet,
+                  likes_count: data.likes_count,
+                  liked_by_current_user: data.liked,
+                }
+              : tweet
+          )
+        );
+      } else {
         loadTweets();
       }
     } catch (err) {
-      console.error('Error liking tweet:', err);
+      console.error('Error toggling like:', err);
       loadTweets();
     }
   };
@@ -158,59 +186,67 @@ export default function App() {
         <p style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading feed...</p>
       ) : (
         <div>
-          {tweets.map((tweet) => (
-            <article key={tweet.id} style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: '12px' }}>
-              {/* Avatar Initial */}
-              <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', flexShrink: 0 }}>
-                {tweet.username ? tweet.username[0].toUpperCase() : 'U'}
-              </div>
+          {tweets.map((tweet) => {
+            const isLiked = tweet.liked_by_current_user || false;
 
-              {/* Tweet Body */}
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 'bold', fontSize: '15px' }}>@{tweet.username}</span>
-                  <button
-                    onClick={() => handleDeleteTweet(tweet.id)}
-                    title="Delete Tweet"
-                    style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
+            return (
+              <article key={tweet.id} style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: '12px' }}>
+                {/* Avatar Initial */}
+                <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', flexShrink: 0 }}>
+                  {tweet.username ? tweet.username[0].toUpperCase() : 'U'}
                 </div>
-                <p style={{ margin: '6px 0 12px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word' }}>
-                  {tweet.content}
-                </p>
-                {/* Metrics */}
-                <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
-                    <MessageCircle size={16} /> 0
-                  </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
-                    <Repeat2 size={16} /> 0
-                  </span>
-                  <button
-                    onClick={() => handleLikeTweet(tweet.id)}
-                    title="Like Tweet"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      fontSize: '13px',
-                      background: 'transparent',
-                      border: 'none',
-                      color: '#6b7280',
-                      cursor: 'pointer',
-                      padding: 0,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.color = '#ef4444')}
-                    onMouseLeave={(e) => (e.currentTarget.style.color = '#6b7280')}
-                  >
-                    <Heart size={16} /> {tweet.likes_count || 0}
-                  </button>
+
+                {/* Tweet Body */}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ fontWeight: 'bold', fontSize: '15px' }}>@{tweet.username}</span>
+                    <button
+                      onClick={() => handleDeleteTweet(tweet.id)}
+                      title="Delete Tweet"
+                      style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                  <p style={{ margin: '6px 0 12px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word' }}>
+                    {tweet.content}
+                  </p>
+                  {/* Metrics */}
+                  <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+                      <MessageCircle size={16} /> 0
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+                      <Repeat2 size={16} /> 0
+                    </span>
+                    <button
+                      onClick={() => handleLikeTweet(tweet.id)}
+                      title={isLiked ? "Unlike Tweet" : "Like Tweet"}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '13px',
+                        background: 'transparent',
+                        border: 'none',
+                        color: isLiked ? '#ef4444' : '#6b7280',
+                        cursor: 'pointer',
+                        padding: 0,
+                        transition: 'color 0.15s ease'
+                      }}
+                    >
+                      <Heart 
+                        size={16} 
+                        fill={isLiked ? '#ef4444' : 'none'} 
+                        stroke={isLiked ? '#ef4444' : 'currentColor'}
+                      /> 
+                      {tweet.likes_count || 0}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
     </div>
