@@ -3,7 +3,6 @@ module Api
     class TweetsController < ApplicationController
       # GET /api/v1/tweets
       def index
-        # Indexed query: latest tweets pehle
         tweets = Tweet.order(created_at: :desc).limit(50)
         render json: tweets, status: :ok
       end
@@ -11,6 +10,7 @@ module Api
       # POST /api/v1/tweets
       def create
         tweet = Tweet.new(tweet_params)
+        tweet.likes_count ||= 0
 
         if tweet.save
           render json: tweet, status: :created
@@ -30,6 +30,7 @@ module Api
 
       private
 
+      # Standard Rails Strong Parameters
       def tweet_params
         params.require(:tweet).permit(:username, :content)
       end
