@@ -1,13 +1,14 @@
 module Api
   module V1
     class TweetsController < ApplicationController
-      # GET /api/v1/tweets
+      wrap_parameters false
+
       def index
         tweets = Tweet.order(created_at: :desc).limit(50)
+        # Optional: return whether current hardcoded user liked it or not
         render json: tweets, status: :ok
       end
 
-      # POST /api/v1/tweets
       def create
         tweet = Tweet.new(tweet_params)
         tweet.likes_count ||= 0
@@ -19,7 +20,6 @@ module Api
         end
       end
 
-      # DELETE /api/v1/tweets/:id
       def destroy
         tweet = Tweet.find(params[:id])
         tweet.destroy
@@ -28,18 +28,36 @@ module Api
         render json: { error: "Tweet not found" }, status: :not_found
       end
 
-      # POST /api/v1/tweets/:id/like
+      # POST /api/v1/tweets/:id/like (Toggle logic)
       def like
-        Tweet.increment_counter(:likes_count, params[:id])
         tweet = Tweet.find(params[:id])
-        render json: { id: tweet.id, likes_count: tweet.likes_count }, status: :ok
-      rescue ActiveRecord::RecordNotFound
-        render json: { error: "Tweet not found" }, status: :not_found
+        username = params[:username] || "satya_dev"
+
+        existing_like = tweet.likes.find_by(username: username)
+
+        if existing_like
+          # Already liked -> UNLIKE
+          existing_like.destroy
+          Tweet.decrement_counter(:likes_count, tweet.id)
+          liked = false
+        else
+          # Not liked yet -> LIKE
+          tweet.likes.create!(username: username)
+          Tweet.increment_counter(:likes_count, tweet.id)
+          liked = true
+        end
+
+        tweet.reload
+        render json: { id: tweet.id, likes_count: tweet.likes_count, liked: liked }, status: :ok
+        rescue ActiveRecord::RecordNotFound
+          render json: { error: "Tweet not found" }, status: :not_found
+        rescue ActiveRecord::RecordNotUnique
+          # Concurrency safety net
+          render json: { error: "Duplicate like prevented" }, status: :conflict
       end
-      
+
       private
 
-      # Standard Rails Strong Parameters
       def tweet_params
         params.require(:tweet).permit(:username, :content)
       end
