@@ -5,6 +5,9 @@ Rails.application.routes.draw do
       post "auth/signup", to: "auth#signup"
       post "auth/login",  to: "auth#login"
 
+      # User Profile endpoint lookup via username
+      resources :users, only: [:show], param: :username
+
       # Tweets and Likes
       resources :tweets, only: [:index, :create, :destroy] do
         member do
