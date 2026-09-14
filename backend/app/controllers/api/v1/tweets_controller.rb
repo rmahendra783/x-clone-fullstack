@@ -28,6 +28,15 @@ module Api
         render json: { error: "Tweet not found" }, status: :not_found
       end
 
+      # POST /api/v1/tweets/:id/like
+      def like
+        Tweet.increment_counter(:likes_count, params[:id])
+        tweet = Tweet.find(params[:id])
+        render json: { id: tweet.id, likes_count: tweet.likes_count }, status: :ok
+      rescue ActiveRecord::RecordNotFound
+        render json: { error: "Tweet not found" }, status: :not_found
+      end
+      
       private
 
       # Standard Rails Strong Parameters
