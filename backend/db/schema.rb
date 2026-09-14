@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_14_141800) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_14_143711) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -18,9 +18,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_14_141800) do
     t.datetime "created_at", null: false
     t.bigint "tweet_id", null: false
     t.datetime "updated_at", null: false
-    t.string "username", null: false
-    t.index ["tweet_id", "username"], name: "index_likes_on_tweet_id_and_username", unique: true
+    t.bigint "user_id"
+    t.index ["tweet_id", "user_id"], name: "index_likes_on_tweet_id_and_user_id", unique: true
     t.index ["tweet_id"], name: "index_likes_on_tweet_id"
+    t.index ["user_id"], name: "index_likes_on_user_id"
   end
 
   create_table "tweets", force: :cascade do |t|
@@ -28,9 +29,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_14_141800) do
     t.datetime "created_at", null: false
     t.integer "likes_count", default: 0, null: false
     t.datetime "updated_at", null: false
+    t.bigint "user_id"
     t.string "username", null: false
     t.index ["created_at"], name: "index_tweets_on_created_at"
+    t.index ["user_id"], name: "index_tweets_on_user_id"
+  end
+
+  create_table "users", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "email", null: false
+    t.string "password_digest", null: false
+    t.datetime "updated_at", null: false
+    t.string "username", null: false
+    t.index ["email"], name: "index_users_on_email", unique: true
+    t.index ["username"], name: "index_users_on_username", unique: true
   end
 
   add_foreign_key "likes", "tweets"
+  add_foreign_key "likes", "users"
+  add_foreign_key "tweets", "users"
 end
