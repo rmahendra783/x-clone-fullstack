@@ -86,6 +86,33 @@ export default function App() {
     }
   };
 
+  // POST Request: Like tweet with optimistic UI update and fallback
+  const handleLikeTweet = async (id) => {
+    // 1. Optimistic UI update: instantly increment count on the client
+    setTweets(
+      tweets.map((tweet) =>
+        tweet.id === id ? { ...tweet, likes_count: (tweet.likes_count || 0) + 1 } : tweet
+      )
+    );
+
+    try {
+      const res = await fetch(`${API_URL}/${id}/like`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!res.ok) {
+        // Rollback state if server returns an error
+        loadTweets();
+      }
+    } catch (err) {
+      console.error('Error liking tweet:', err);
+      loadTweets();
+    }
+  };
+
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif', borderLeft: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', minHeight: '100vh' }}>
       {/* Sticky Header */}
@@ -161,9 +188,25 @@ export default function App() {
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
                     <Repeat2 size={16} /> 0
                   </span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+                  <button
+                    onClick={() => handleLikeTweet(tweet.id)}
+                    title="Like Tweet"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '13px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#6b7280',
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = '#ef4444')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = '#6b7280')}
+                  >
                     <Heart size={16} /> {tweet.likes_count || 0}
-                  </span>
+                  </button>
                 </div>
               </div>
             </article>
