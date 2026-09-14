@@ -5,7 +5,7 @@ class Tweet < ApplicationRecord
   validates :content, presence: true, length: { maximum: 280 }
   validates :likes_count, numericality: { greater_than_or_equal_to: 0 }
 
-  # Frontend backward compatibility: author username expose karta hai
+  # Delegates author username to the associated user record
   def username
     user&.username || "anonymous"
   end
