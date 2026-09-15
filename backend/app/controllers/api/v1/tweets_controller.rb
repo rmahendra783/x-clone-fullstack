@@ -87,7 +87,15 @@ module Api
       # DELETE /api/v1/tweets/:id
       def destroy
         tweet = current_user.tweets.find(params[:id])
+        parent_id = tweet.parent_id
         tweet.destroy
+
+        ActionCable.server.broadcast("feed_channel", {
+          type: "DELETE_TWEET",
+          id: tweet.id,
+          parent_id: parent_id
+        })
+
         head :no_content
       rescue ActiveRecord::RecordNotFound
         render json: { error: "Tweet not found or unauthorized" }, status: :not_found
@@ -109,6 +117,17 @@ module Api
         end
 
         tweet.reload
+
+        # Broadcast live like count to all open sessions
+        ActionCable.server.broadcast("feed_channel", {
+          type: "LIKE_UPDATE",
+          tweet_id: tweet.id,
+          parent_id: tweet.parent_id,
+          likes_count: tweet.likes_count,
+          user_id: current_user.id,
+          liked: liked
+        })
+
         render json: {
           id: tweet.id,
           likes_count: tweet.likes_count,
@@ -136,6 +155,11 @@ module Api
           image_url = Rails.application.routes.url_helpers.rails_blob_url(tweet.image, host: request.base_url)
         end
 
+        is_liked = false
+        if req_user
+          is_liked = tweet.likes.any? { |l| l.user_id == req_user.id }
+        end
+
         {
           id: tweet.id,
           content: tweet.content,
@@ -145,7 +169,7 @@ module Api
           username: tweet.username,
           parent_id: tweet.parent_id,
           image_url: image_url,
-          liked_by_current_user: req_user ? tweet.likes.any? { |l| l.user_id == req_user.id } : false
+          liked_by_current_user: is_liked
         }
       end
 

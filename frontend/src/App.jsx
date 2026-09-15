@@ -122,7 +122,6 @@ export default function App() {
     }
   }, [getAuthHeaders]);
 
-  // Master view loader
   useEffect(() => {
     if (currentView === 'profile' && viewingProfile) {
       loadUserProfile(viewingProfile);
@@ -131,31 +130,28 @@ export default function App() {
     }
   }, [currentView, viewingProfile, feedTab, loadInitialFeed, loadUserProfile]);
 
-  // ActionCable WebSocket Real-time Listener
+  // ActionCable Subscription for Tweets, Comments, Likes, and Deletions
   useEffect(() => {
     const consumer = createConsumer(CABLE_URL);
 
     const subscription = consumer.subscriptions.create('FeedChannel', {
       received(data) {
-        if (!data || !data.tweet) return;
+        if (!data) return;
 
         if (data.type === 'NEW_TWEET') {
           setTweets((prev) => {
-            // Deduplicate if already added via HTTP response
             if (prev.some((t) => t.id === data.tweet.id)) return prev;
             return [data.tweet, ...prev];
           });
         } else if (data.type === 'NEW_REPLY') {
           const parentId = data.tweet.parent_id;
 
-          // Increment replies count on the parent card
           setTweets((prev) =>
             prev.map((t) =>
               t.id === parentId ? { ...t, replies_count: (t.replies_count || 0) + 1 } : t
             )
           );
 
-          // Prepend reply if this post's comment drawer is open
           setCommentsMap((prev) => {
             if (!prev[parentId]?.open) return prev;
             if (prev[parentId]?.replies.some((r) => r.id === data.tweet.id)) return prev;
@@ -167,6 +163,56 @@ export default function App() {
               },
             };
           });
+        } else if (data.type === 'LIKE_UPDATE') {
+          const targetId = data.tweet_id;
+          const isCurrentUserAction = currentUser && currentUser.id === data.user_id;
+
+          // Update feed items
+          setTweets((prev) =>
+            prev.map((t) => {
+              if (t.id !== targetId) return t;
+              return {
+                ...t,
+                likes_count: data.likes_count,
+                liked_by_current_user: isCurrentUserAction ? data.liked : t.liked_by_current_user,
+              };
+            })
+          );
+
+          // Update comment drawers if open
+          setCommentsMap((prev) => {
+            const updated = { ...prev };
+            Object.keys(updated).forEach((pid) => {
+              if (updated[pid]?.replies) {
+                updated[pid].replies = updated[pid].replies.map((reply) => {
+                  if (reply.id !== targetId) return reply;
+                  return {
+                    ...reply,
+                    likes_count: data.likes_count,
+                    liked_by_current_user: isCurrentUserAction ? data.liked : reply.liked_by_current_user,
+                  };
+                });
+              }
+            });
+            return updated;
+          });
+        } else if (data.type === 'DELETE_TWEET') {
+          if (data.parent_id) {
+            setTweets((prev) =>
+              prev.map((t) =>
+                t.id === data.parent_id ? { ...t, replies_count: Math.max(0, (t.replies_count || 1) - 1) } : t
+              )
+            );
+            setCommentsMap((prev) => ({
+              ...prev,
+              [data.parent_id]: {
+                ...prev[data.parent_id],
+                replies: (prev[data.parent_id]?.replies || []).filter((r) => r.id !== data.id),
+              },
+            }));
+          } else {
+            setTweets((prev) => prev.filter((t) => t.id !== data.id));
+          }
         }
       },
     });
@@ -175,7 +221,7 @@ export default function App() {
       subscription.unsubscribe();
       consumer.disconnect();
     };
-  }, []);
+  }, [currentUser]);
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -217,7 +263,6 @@ export default function App() {
     localStorage.removeItem('user');
   };
 
-  // Image Selection & Preview
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -233,7 +278,6 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Create Tweet
   const handleCreateTweet = async (e) => {
     e.preventDefault();
     if ((!content.trim() && !selectedImage) || !token || isPosting) return;
@@ -268,8 +312,8 @@ export default function App() {
     }
   };
 
-  // Toggle Inline Comments Drawer
-  const toggleComments = async (tweetId) => {
+  const toggleComments = async (e, tweetId) => {
+    e.preventDefault();
     const isCurrentlyOpen = commentsMap[tweetId]?.open;
 
     if (isCurrentlyOpen) {
@@ -314,8 +358,8 @@ export default function App() {
     }
   };
 
-  // Post Inline Comment
-  const handlePostComment = async (tweetId) => {
+  const handlePostComment = async (e, tweetId) => {
+    if (e) e.preventDefault();
     const commentText = commentsMap[tweetId]?.replyText?.trim();
     if (!commentText || !token || commentsMap[tweetId]?.submitting) return;
 
@@ -371,27 +415,27 @@ export default function App() {
     }
   };
 
-  // Like Toggle
-  const handleLikeTweet = async (id) => {
+  const handleLikeTweet = async (e, id) => {
+    e.preventDefault();
+    e.stopPropagation();
     if (!token) return alert('Please log in to like tweets.');
 
-    const updateLike = (item) => {
+    const updateOptimistic = (item) => {
       if (item.id !== id) return item;
-      const isLiked = item.liked_by_current_user || false;
+      const wasLiked = item.liked_by_current_user || false;
       return {
         ...item,
-        liked_by_current_user: !isLiked,
-        likes_count: isLiked ? Math.max(0, (item.likes_count || 0) - 1) : (item.likes_count || 0) + 1,
+        liked_by_current_user: !wasLiked,
+        likes_count: wasLiked ? Math.max(0, (item.likes_count || 0) - 1) : (item.likes_count || 0) + 1,
       };
     };
 
-    setTweets((prev) => prev.map(updateLike));
-
+    setTweets((prev) => prev.map(updateOptimistic));
     setCommentsMap((prev) => {
       const updated = { ...prev };
       Object.keys(updated).forEach((pid) => {
         if (updated[pid]?.replies) {
-          updated[pid].replies = updated[pid].replies.map(updateLike);
+          updated[pid].replies = updated[pid].replies.map(updateOptimistic);
         }
       });
       return updated;
@@ -423,8 +467,8 @@ export default function App() {
     }
   };
 
-  // Delete Tweet
-  const handleDeleteTweet = async (id, parentId = null) => {
+  const handleDeleteTweet = async (e, id, parentId = null) => {
+    e.preventDefault();
     if (!token) return;
     try {
       const res = await fetch(`${BASE_URL}/tweets/${id}`, {
@@ -454,8 +498,8 @@ export default function App() {
     }
   };
 
-  // Follow Toggle
-  const handleToggleFollow = async (targetUsername) => {
+  const handleToggleFollow = async (e, targetUsername) => {
+    e.preventDefault();
     if (!token) return alert('Please log in to follow users.');
 
     try {
@@ -555,6 +599,7 @@ export default function App() {
         <p style={{ textAlign: 'center', fontSize: '14px', color: '#6b7280', marginTop: '20px' }}>
           {isLoginView ? "Don't have an account?" : 'Already have an account?'}{' '}
           <button
+            type="button"
             onClick={() => {
               setIsLoginView(!isLoginView);
               setAuthError('');
@@ -575,6 +620,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           {currentView === 'profile' && (
             <button
+              type="button"
               onClick={navigateToHome}
               style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
             >
@@ -595,12 +641,14 @@ export default function App() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button
+            type="button"
             onClick={() => navigateToProfile(currentUser.username)}
             style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#1d9bf0' }}
           >
             @{currentUser?.username}
           </button>
           <button
+            type="button"
             onClick={handleLogout}
             title="Log Out"
             style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
@@ -610,7 +658,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Profile Header or Composer */}
+      {/* Profile Header or Tab Navigator */}
       {currentView === 'profile' ? (
         <div style={{ padding: '20px 16px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -620,7 +668,8 @@ export default function App() {
 
             {currentUser && currentUser.username !== profileData?.username && (
               <button
-                onClick={() => handleToggleFollow(profileData.username)}
+                type="button"
+                onClick={(e) => handleToggleFollow(e, profileData.username)}
                 style={{
                   padding: '8px 20px',
                   borderRadius: '9999px',
@@ -660,6 +709,7 @@ export default function App() {
         <>
           <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
             <button
+              type="button"
               onClick={() => setFeedTab('for_you')}
               style={{
                 flex: 1,
@@ -679,6 +729,7 @@ export default function App() {
               )}
             </button>
             <button
+              type="button"
               onClick={() => setFeedTab('following')}
               style={{
                 flex: 1,
@@ -832,6 +883,7 @@ export default function App() {
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <button
+                        type="button"
                         onClick={() => navigateToProfile(tweet.username)}
                         style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', color: 'inherit' }}
                       >
@@ -839,7 +891,8 @@ export default function App() {
                       </button>
                       {isAuthor && (
                         <button
-                          onClick={() => handleDeleteTweet(tweet.id)}
+                          type="button"
+                          onClick={(e) => handleDeleteTweet(e, tweet.id)}
                           title="Delete Tweet"
                           style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
                         >
@@ -870,7 +923,8 @@ export default function App() {
 
                     <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
                       <button
-                        onClick={() => toggleComments(tweet.id)}
+                        type="button"
+                        onClick={(e) => toggleComments(e, tweet.id)}
                         title="View / Post Comments"
                         style={{
                           display: 'flex',
@@ -894,7 +948,8 @@ export default function App() {
                       </span>
 
                       <button
-                        onClick={() => handleLikeTweet(tweet.id)}
+                        type="button"
+                        onClick={(e) => handleLikeTweet(e, tweet.id)}
                         title={isLiked ? 'Unlike' : 'Like'}
                         style={{
                           display: 'flex',
@@ -922,7 +977,10 @@ export default function App() {
                 {/* Inline Comment Drawer */}
                 {commentState.open && (
                   <div style={{ backgroundColor: '#f9fafb', padding: '12px 16px 16px 56px', borderTop: '1px solid #f3f4f6' }}>
-                    <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                    <form
+                      onSubmit={(e) => handlePostComment(e, tweet.id)}
+                      style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}
+                    >
                       <input
                         type="text"
                         placeholder={`Reply to @${tweet.username}...`}
@@ -933,9 +991,6 @@ export default function App() {
                             ...prev,
                             [tweet.id]: { ...prev[tweet.id], replyText: val },
                           }));
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handlePostComment(tweet.id);
                         }}
                         style={{
                           flex: 1,
@@ -948,7 +1003,7 @@ export default function App() {
                         }}
                       />
                       <button
-                        onClick={() => handlePostComment(tweet.id)}
+                        type="submit"
                         disabled={!commentState.replyText?.trim() || commentState.submitting}
                         style={{
                           backgroundColor: '#1d9bf0',
@@ -966,7 +1021,7 @@ export default function App() {
                       >
                         {commentState.submitting ? <Loader2 className="animate-spin" size={14} /> : <Send size={15} />}
                       </button>
-                    </div>
+                    </form>
 
                     {commentState.loading ? (
                       <p style={{ fontSize: '13px', color: '#6b7280', margin: '8px 0' }}>Loading comments...</p>
@@ -998,7 +1053,8 @@ export default function App() {
 
                                   {isReplyAuthor && (
                                     <button
-                                      onClick={() => handleDeleteTweet(reply.id, tweet.id)}
+                                      type="button"
+                                      onClick={(e) => handleDeleteTweet(e, reply.id, tweet.id)}
                                       title="Delete Comment"
                                       style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', padding: 0 }}
                                     >
@@ -1013,7 +1069,8 @@ export default function App() {
 
                                 <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
                                   <button
-                                    onClick={() => handleLikeTweet(reply.id)}
+                                    type="button"
+                                    onClick={(e) => handleLikeTweet(e, reply.id)}
                                     style={{
                                       display: 'flex',
                                       alignItems: 'center',
