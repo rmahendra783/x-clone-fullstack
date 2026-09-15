@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send } from 'lucide-react';
+import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send, Image, X } from 'lucide-react';
 
 const BASE_URL = 'http://localhost:3000/api/v1';
 
@@ -18,25 +18,29 @@ export default function App() {
   const [currentView, setCurrentView] = useState('home'); // 'home' | 'profile'
   const [viewingProfile, setViewingProfile] = useState(null);
 
-  // Feed & Timeline State
+  // Feed State
   const [feedTab, setFeedTab] = useState('for_you'); // 'for_you' | 'following'
   const [tweets, setTweets] = useState([]);
   const [profileData, setProfileData] = useState(null);
+
+  // Composer State
   const [content, setContent] = useState('');
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [isPosting, setIsPosting] = useState(false);
+  const fileInputRef = useRef(null);
+
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState(null);
 
-  // Inline Comment Expansion State (Maps tweet_id -> { open: bool, loading: bool, replies: [], replyText: '' })
+  // Inline Comment Drawer State
   const [commentsMap, setCommentsMap] = useState({});
 
   const observerRef = useRef(null);
 
   const getAuthHeaders = useCallback(() => {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    };
+    const headers = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
     return headers;
   }, [token]);
@@ -49,7 +53,7 @@ export default function App() {
         ? `${BASE_URL}/tweets?feed=following`
         : `${BASE_URL}/tweets`;
 
-      const res = await fetch(url, { headers: getAuthHeaders() });
+      const res = await fetch(url, { headers: { ...getAuthHeaders(), 'Accept': 'application/json' } });
       if (res.ok) {
         const data = await res.json();
         setTweets(data.tweets || []);
@@ -71,7 +75,7 @@ export default function App() {
         ? `${BASE_URL}/tweets?feed=following&cursor=${nextCursor}`
         : `${BASE_URL}/tweets?cursor=${nextCursor}`;
 
-      const res = await fetch(url, { headers: getAuthHeaders() });
+      const res = await fetch(url, { headers: { ...getAuthHeaders(), 'Accept': 'application/json' } });
       if (res.ok) {
         const data = await res.json();
         setTweets((prev) => [...prev, ...(data.tweets || [])]);
@@ -101,7 +105,7 @@ export default function App() {
     setLoading(true);
     try {
       const res = await fetch(`${BASE_URL}/users/${username}`, {
-        headers: getAuthHeaders(),
+        headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
       });
       if (res.ok) {
         const data = await res.json();
@@ -124,7 +128,6 @@ export default function App() {
     }
   }, [currentView, viewingProfile, feedTab, loadInitialFeed, loadUserProfile]);
 
-  // Auth Handling
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -165,31 +168,55 @@ export default function App() {
     localStorage.removeItem('user');
   };
 
-  // Top-Level Tweet Creation
+  // Image File Handling
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setSelectedImage(file);
+      setImagePreview(URL.createObjectURL(file));
+    }
+  };
+
+  const removeSelectedImage = () => {
+    setSelectedImage(null);
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Create Tweet with Image via multipart/form-data
   const handleCreateTweet = async (e) => {
     e.preventDefault();
-    if (!content.trim() || !token) return;
+    if ((!content.trim() && !selectedImage) || !token || isPosting) return;
+
+    setIsPosting(true);
+    const formData = new FormData();
+    if (content.trim()) formData.append('tweet[content]', content.trim());
+    if (selectedImage) formData.append('tweet[image]', selectedImage);
 
     try {
       const res = await fetch(`${BASE_URL}/tweets`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ tweet: { content: content.trim() } }),
+        body: formData,
       });
 
       if (res.ok) {
         const newTweet = await res.json();
         setTweets((prev) => [newTweet, ...prev]);
         setContent('');
+        removeSelectedImage();
       } else if (res.status === 401) {
         handleLogout();
       }
     } catch (err) {
       console.error('Error posting tweet:', err);
+    } finally {
+      setIsPosting(false);
     }
   };
 
-  // Toggle Inline Comments Section (FB / Insta Style)
+  // Toggle Inline Comments Drawer
   const toggleComments = async (tweetId) => {
     const isCurrentlyOpen = commentsMap[tweetId]?.open;
 
@@ -201,7 +228,6 @@ export default function App() {
       return;
     }
 
-    // Open & Load existing comments from backend
     setCommentsMap((prev) => ({
       ...prev,
       [tweetId]: { open: true, loading: true, replies: prev[tweetId]?.replies || [], replyText: '' },
@@ -209,11 +235,10 @@ export default function App() {
 
     try {
       const res = await fetch(`${BASE_URL}/tweets/${tweetId}`, {
-        headers: getAuthHeaders(),
+        headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
       });
       if (res.ok) {
         const data = await res.json();
-        // Sort newest first client-side as safeguard
         const sortedReplies = (data.replies || []).sort(
           (a, b) => new Date(b.created_at) - new Date(a.created_at)
         );
@@ -237,15 +262,20 @@ export default function App() {
     }
   };
 
-  // Post Inline Comment (Prepend to top)
+  // Post Inline Comment
   const handlePostComment = async (tweetId) => {
     const commentText = commentsMap[tweetId]?.replyText?.trim();
-    if (!commentText || !token) return;
+    if (!commentText || !token || commentsMap[tweetId]?.submitting) return;
+
+    setCommentsMap((prev) => ({
+      ...prev,
+      [tweetId]: { ...prev[tweetId], submitting: true },
+    }));
 
     try {
       const res = await fetch(`${BASE_URL}/tweets`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({
           tweet: {
             content: commentText,
@@ -257,25 +287,33 @@ export default function App() {
       if (res.ok) {
         const newReply = await res.json();
 
-        // 1. Prepend new reply so newest appears first
         setCommentsMap((prev) => ({
           ...prev,
           [tweetId]: {
             ...prev[tweetId],
             replies: [newReply, ...(prev[tweetId]?.replies || [])],
             replyText: '',
+            submitting: false,
           },
         }));
 
-        // 2. Increment comment count on the tweet card
         setTweets((prev) =>
           prev.map((t) =>
             t.id === tweetId ? { ...t, replies_count: (t.replies_count || 0) + 1 } : t
           )
         );
+      } else {
+        setCommentsMap((prev) => ({
+          ...prev,
+          [tweetId]: { ...prev[tweetId], submitting: false },
+        }));
       }
     } catch (err) {
       console.error('Failed to post comment:', err);
+      setCommentsMap((prev) => ({
+        ...prev,
+        [tweetId]: { ...prev[tweetId], submitting: false },
+      }));
     }
   };
 
@@ -295,7 +333,6 @@ export default function App() {
 
     setTweets((prev) => prev.map(updateLike));
 
-    // Also update likes inside expanded comments if applicable
     setCommentsMap((prev) => {
       const updated = { ...prev };
       Object.keys(updated).forEach((pid) => {
@@ -309,7 +346,7 @@ export default function App() {
     try {
       const res = await fetch(`${BASE_URL}/tweets/${id}/like`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
       });
       if (res.ok) {
         const data = await res.json();
@@ -332,7 +369,7 @@ export default function App() {
     }
   };
 
-  // Delete Tweet or Comment
+  // Delete Tweet
   const handleDeleteTweet = async (id, parentId = null) => {
     if (!token) return;
     try {
@@ -342,7 +379,6 @@ export default function App() {
       });
       if (res.ok) {
         if (parentId) {
-          // It was a reply inside an expanded list
           setCommentsMap((prev) => ({
             ...prev,
             [parentId]: {
@@ -371,7 +407,7 @@ export default function App() {
     try {
       const res = await fetch(`${BASE_URL}/users/${targetUsername}/follow`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
       });
 
       if (res.ok) {
@@ -609,6 +645,7 @@ export default function App() {
             </button>
           </div>
 
+          {/* Tweet Composer with Media Attachment */}
           <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
             <textarea
               rows="3"
@@ -618,13 +655,71 @@ export default function App() {
               maxLength={280}
               style={{ width: '100%', border: 'none', outline: 'none', fontSize: '18px', resize: 'none', boxSizing: 'border-box' }}
             />
+
+            {/* Attached Image Preview */}
+            {imagePreview && (
+              <div style={{ position: 'relative', margin: '10px 0', borderRadius: '16px', overflow: 'hidden', maxHeight: '300px', border: '1px solid #e5e7eb' }}>
+                <img src={imagePreview} alt="Upload preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <button
+                  type="button"
+                  onClick={removeSelectedImage}
+                  style={{
+                    position: 'absolute',
+                    top: '8px',
+                    right: '8px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '50%',
+                    width: '30px',
+                    height: '30px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+
+            <input
+              type="file"
+              accept="image/*"
+              ref={fileInputRef}
+              onChange={handleImageChange}
+              style={{ display: 'none' }}
+            />
+
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
-              <span style={{ fontSize: '12px', color: content.length > 250 ? 'red' : '#6b7280' }}>
-                {280 - content.length} characters left
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Add photo"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#1d9bf0',
+                    cursor: 'pointer',
+                    padding: '6px',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Image size={20} />
+                </button>
+                <span style={{ fontSize: '12px', color: content.length > 250 ? 'red' : '#6b7280' }}>
+                  {280 - content.length}
+                </span>
+              </div>
+
               <button
                 type="submit"
-                disabled={!content.trim()}
+                disabled={(!content.trim() && !selectedImage) || isPosting}
                 style={{
                   backgroundColor: '#1d9bf0',
                   color: '#fff',
@@ -632,11 +727,15 @@ export default function App() {
                   padding: '8px 18px',
                   borderRadius: '9999px',
                   fontWeight: 'bold',
-                  cursor: content.trim() ? 'pointer' : 'not-allowed',
-                  opacity: content.trim() ? 1 : 0.6,
+                  cursor: (content.trim() || selectedImage) && !isPosting ? 'pointer' : 'not-allowed',
+                  opacity: (content.trim() || selectedImage) && !isPosting ? 1 : 0.6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
               >
-                Post
+                {isPosting && <Loader2 className="animate-spin" size={16} />}
+                {isPosting ? 'Posting...' : 'Post'}
               </button>
             </div>
           </form>
@@ -669,7 +768,6 @@ export default function App() {
                 ref={isLastItem && currentView === 'home' ? lastTweetSentinelRef : null}
                 style={{ borderBottom: '1px solid #e5e7eb' }}
               >
-                {/* Main Tweet Body */}
                 <article style={{ padding: '16px', display: 'flex', gap: '12px', backgroundColor: '#ffffff' }}>
                   <div
                     onClick={() => navigateToProfile(tweet.username)}
@@ -697,12 +795,28 @@ export default function App() {
                       )}
                     </div>
 
-                    <p style={{ margin: '6px 0 12px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word', color: '#0f1419' }}>
-                      {tweet.content}
-                    </p>
+                    {tweet.content && (
+                      <p style={{ margin: '6px 0 10px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word', color: '#0f1419' }}>
+                        {tweet.content}
+                      </p>
+                    )}
+
+                    {/* Display Attached Tweet Image */}
+                    {tweet.image_url && (
+                      <div style={{ margin: '8px 0 12px 0', borderRadius: '16px', overflow: 'hidden', border: '1px solid #e5e7eb', maxHeight: '380px' }}>
+                        <img
+                          src={tweet.image_url}
+                          alt=""
+                          loading="lazy"
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                          }}
+                          style={{ width: '100%', maxHeight: '380px', objectFit: 'cover', display: 'block' }}
+                        />
+                      </div>
+                    )}
 
                     <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
-                      {/* Comment Toggle Button (FB / Insta style) */}
                       <button
                         onClick={() => toggleComments(tweet.id)}
                         title="View / Post Comments"
@@ -753,10 +867,9 @@ export default function App() {
                   </div>
                 </article>
 
-                {/* FB/Insta Style Inline Expandable Comments Section */}
+                {/* Inline Comment Drawer */}
                 {commentState.open && (
                   <div style={{ backgroundColor: '#f9fafb', padding: '12px 16px 16px 56px', borderTop: '1px solid #f3f4f6' }}>
-                    {/* Add Comment Input Bar */}
                     <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
                       <input
                         type="text"
@@ -784,7 +897,7 @@ export default function App() {
                       />
                       <button
                         onClick={() => handlePostComment(tweet.id)}
-                        disabled={!commentState.replyText?.trim()}
+                        disabled={!commentState.replyText?.trim() || commentState.submitting}
                         style={{
                           backgroundColor: '#1d9bf0',
                           color: '#fff',
@@ -795,15 +908,14 @@ export default function App() {
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          cursor: commentState.replyText?.trim() ? 'pointer' : 'not-allowed',
-                          opacity: commentState.replyText?.trim() ? 1 : 0.5,
+                          cursor: commentState.replyText?.trim() && !commentState.submitting ? 'pointer' : 'not-allowed',
+                          opacity: commentState.replyText?.trim() && !commentState.submitting ? 1 : 0.5,
                         }}
                       >
-                        <Send size={15} />
+                        {commentState.submitting ? <Loader2 className="animate-spin" size={14} /> : <Send size={15} />}
                       </button>
                     </div>
 
-                    {/* Comments List */}
                     {commentState.loading ? (
                       <p style={{ fontSize: '13px', color: '#6b7280', margin: '8px 0' }}>Loading comments...</p>
                     ) : commentState.replies?.length === 0 ? (

@@ -2,13 +2,13 @@ module Api
   module V1
     class TweetsController < ApplicationController
       wrap_parameters false
+      include Rails.application.routes.url_helpers
 
-      # Mutating operations require a valid JWT token; timeline reads remain open
       before_action :authenticate_request!, only: [:create, :destroy, :like]
 
       PAGE_SIZE = 10
 
-      # GET /api/v1/tweets?feed=following&cursor=123
+      # GET /api/v1/tweets
       def index
         current_req_user = extract_optional_user
 
@@ -23,13 +23,12 @@ module Api
           Tweet.root_tweets
         end
 
-        # Keyset pagination: load records older than the provided cursor
         if params[:cursor].present?
           tweets_scope = tweets_scope.where("tweets.id < ?", params[:cursor].to_i)
         end
 
-        # Request 1 extra record to determine if there is a next page
         fetched = tweets_scope.includes(:user, :likes)
+                              .with_attached_image
                               .order(id: :desc)
                               .limit(PAGE_SIZE + 1)
                               .to_a
@@ -44,13 +43,14 @@ module Api
         }, status: :ok
       end
 
-      # GET /api/v1/tweets/:id (Fetch tweet details + all child replies)
+      # GET /api/v1/tweets/:id
       def show
-        tweet = Tweet.includes(:user, :likes).find(params[:id])
+        tweet = Tweet.includes(:user, :likes).with_attached_image.find(params[:id])
         current_req_user = extract_optional_user
 
-        # CHANGED: order(created_at: :desc) so newest comments come first
-        replies = tweet.replies.includes(:user, :likes).order(created_at: :desc)
+        replies = tweet.replies.includes(:user, :likes)
+                               .with_attached_image
+                               .order(created_at: :desc)
 
         render json: {
           tweet: format_single_tweet(tweet, current_req_user),
@@ -62,7 +62,10 @@ module Api
 
       # POST /api/v1/tweets
       def create
-        tweet = current_user.tweets.build(tweet_params)
+        sanitized_params = tweet_params.dup
+        sanitized_params[:content] = nil if sanitized_params[:content].blank?
+
+        tweet = current_user.tweets.build(sanitized_params)
         tweet.likes_count = 0
         tweet.replies_count = 0
 
@@ -82,18 +85,16 @@ module Api
         render json: { error: "Tweet not found or unauthorized" }, status: :not_found
       end
 
-      # POST /api/v1/tweets/:id/like (Relational toggle using user_id foreign key)
+      # POST /api/v1/tweets/:id/like
       def like
         tweet = Tweet.find(params[:id])
         existing_like = tweet.likes.find_by(user_id: current_user.id)
 
         if existing_like
-          # UNLIKE
           existing_like.destroy
           Tweet.decrement_counter(:likes_count, tweet.id)
           liked = false
         else
-          # LIKE
           tweet.likes.create!(user: current_user)
           Tweet.increment_counter(:likes_count, tweet.id)
           liked = true
@@ -113,12 +114,21 @@ module Api
 
       private
 
-      # Strong parameters: Client can send optional parent_id for threaded replies
       def tweet_params
-        params.require(:tweet).permit(:content, :parent_id)
+        if params[:tweet].is_a?(ActionController::Parameters) || params[:tweet].is_a?(Hash)
+          params.require(:tweet).permit(:content, :parent_id, :image)
+        else
+          params.permit(:content, :parent_id, :image)
+        end
       end
 
-      def format_single_tweet(tweet, req_user)
+      # Fixed signature: tweet is required, req_user defaults to nil
+      def format_single_tweet(tweet, req_user = nil)
+        image_url = nil
+        if tweet.image.attached?
+          image_url = Rails.application.routes.url_helpers.rails_blob_url(tweet.image, host: request.base_url)
+        end
+
         {
           id: tweet.id,
           content: tweet.content,
@@ -127,15 +137,15 @@ module Api
           created_at: tweet.created_at,
           username: tweet.username,
           parent_id: tweet.parent_id,
+          image_url: image_url,
           liked_by_current_user: req_user ? tweet.likes.any? { |l| l.user_id == req_user.id } : false
         }
       end
 
-      def format_tweets(tweets, req_user)
+      def format_tweets(tweets, req_user = nil)
         tweets.map { |t| format_single_tweet(t, req_user) }
       end
 
-      # Helper for GET feed: checks if a token is present without blocking guest users
       def extract_optional_user
         header = request.headers["Authorization"]
         return nil unless header.present?

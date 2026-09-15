@@ -7,6 +7,7 @@ gem "pg", "~> 1.1"
 # Use the Puma web server [https://github.com/puma/puma]
 gem "puma", ">= 5.0"
 # Build JSON APIs with ease [https://github.com/rails/jbuilder]
+gem "json", "~> 2.8"
 # gem "jbuilder"
 
 # Use Active Model has_secure_password [https://guides.rubyonrails.org/active_model_basics.html#securepassword]
@@ -52,3 +53,5 @@ group :development, :test do
   # Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
   gem "rubocop-rails-omakase", require: false
 end
+
+gem "mini_magick", "~> 5.4"
