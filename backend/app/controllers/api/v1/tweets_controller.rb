@@ -6,11 +6,25 @@ module Api
       # Mutating operations require a valid JWT token; timeline reads remain open
       before_action :authenticate_request!, only: [:create, :destroy, :like]
 
-      # GET /api/v1/tweets
+      # GET /api/v1/tweets?feed=following OR /api/v1/tweets (default: For You)
       def index
-        # Eager load user and likes to prevent N+1 query bottlenecks
-        tweets = Tweet.includes(:user, :likes).order(created_at: :desc).limit(50)
         current_req_user = extract_optional_user
+
+        tweets_scope = if params[:feed] == "following"
+          if current_req_user
+            # Fetch tweets from users the current user follows + their own tweets
+            followed_ids = current_req_user.following.select(:id)
+            Tweet.where(user_id: followed_ids)
+          else
+            Tweet.none
+          end
+        else
+          # "For You" global feed
+          Tweet.all
+        end
+
+        # Eager load user and likes to eliminate N+1 queries
+        tweets = tweets_scope.includes(:user, :likes).order(created_at: :desc).limit(50)
 
         rendered_tweets = tweets.map do |tweet|
           {

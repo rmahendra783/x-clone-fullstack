@@ -4,33 +4,31 @@ import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar } fr
 const BASE_URL = 'http://localhost:3000/api/v1';
 
 export default function App() {
-  // 1. Auth & Session State
   const [token, setToken] = useState(() => localStorage.getItem('token') || '');
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem('user');
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Auth Form State
   const [isLoginView, setIsLoginView] = useState(true);
   const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
   const [authError, setAuthError] = useState('');
 
-  // Feed & Navigation State
+  // Feed Tabs & Navigation State
+  const [feedTab, setFeedTab] = useState('for_you'); // 'for_you' | 'following'
   const [tweets, setTweets] = useState([]);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
-  const [viewingProfile, setViewingProfile] = useState(null); // null = Home, string = username
+  const [viewingProfile, setViewingProfile] = useState(null);
   const [profileData, setProfileData] = useState(null);
 
-  // 2. Lifecycle: Load feed or profile when view/token changes
   useEffect(() => {
     if (viewingProfile) {
       loadUserProfile(viewingProfile);
     } else {
       loadTweets();
     }
-  }, [token, viewingProfile]);
+  }, [token, viewingProfile, feedTab]);
 
   const getAuthHeaders = () => {
     const headers = {
@@ -43,13 +41,15 @@ export default function App() {
     return headers;
   };
 
-  // GET: Global Timeline
+  // GET: Feed according to active tab
   const loadTweets = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${BASE_URL}/tweets`, {
-        headers: getAuthHeaders(),
-      });
+      const url = feedTab === 'following'
+        ? `${BASE_URL}/tweets?feed=following`
+        : `${BASE_URL}/tweets`;
+
+      const res = await fetch(url, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setTweets(data);
@@ -61,7 +61,6 @@ export default function App() {
     }
   };
 
-  // GET: User Profile & Specific Tweets
   const loadUserProfile = async (username) => {
     setLoading(true);
     try {
@@ -74,13 +73,12 @@ export default function App() {
         setTweets(data.tweets);
       }
     } catch (err) {
-      console.error('Failed to fetch user profile:', err);
+      console.error('Failed to fetch profile:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  // POST: Login / Signup
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -120,7 +118,6 @@ export default function App() {
     localStorage.removeItem('user');
   };
 
-  // POST: Create Tweet
   const handleCreateTweet = async (e) => {
     e.preventDefault();
     if (!content.trim() || !token) return;
@@ -144,16 +141,13 @@ export default function App() {
     }
   };
 
-  // DELETE: Remove Tweet
   const handleDeleteTweet = async (id) => {
     if (!token) return;
-
     try {
       const res = await fetch(`${BASE_URL}/tweets/${id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
-
       if (res.ok) {
         setTweets(tweets.filter((t) => t.id !== id));
       }
@@ -162,12 +156,8 @@ export default function App() {
     }
   };
 
-  // POST: Like / Unlike Toggle
   const handleLikeTweet = async (id) => {
-    if (!token) {
-      alert('Please log in to like tweets.');
-      return;
-    }
+    if (!token) return alert('Please log in to like tweets.');
 
     const targetTweet = tweets.find((t) => t.id === id);
     if (!targetTweet) return;
@@ -180,11 +170,7 @@ export default function App() {
     setTweets(
       tweets.map((t) =>
         t.id === id
-          ? {
-              ...t,
-              likes_count: optimisticCount,
-              liked_by_current_user: !isCurrentlyLiked,
-            }
+          ? { ...t, likes_count: optimisticCount, liked_by_current_user: !isCurrentlyLiked }
           : t
       )
     );
@@ -200,11 +186,7 @@ export default function App() {
         setTweets((prev) =>
           prev.map((t) =>
             t.id === id
-              ? {
-                  ...t,
-                  likes_count: data.likes_count,
-                  liked_by_current_user: data.liked,
-                }
+              ? { ...t, likes_count: data.likes_count, liked_by_current_user: data.liked }
               : t
           )
         );
@@ -212,12 +194,35 @@ export default function App() {
         viewingProfile ? loadUserProfile(viewingProfile) : loadTweets();
       }
     } catch (err) {
-      console.error('Error toggling like:', err);
+      console.error('Error liking tweet:', err);
       viewingProfile ? loadUserProfile(viewingProfile) : loadTweets();
     }
   };
 
-  // 3. Auth Form View
+  const handleToggleFollow = async (targetUsername) => {
+    if (!token) return alert('Please log in to follow users.');
+
+    try {
+      const res = await fetch(`${BASE_URL}/users/${targetUsername}/follow`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setProfileData((prev) => ({
+          ...prev,
+          is_following: data.following,
+          followers_count: data.followers_count,
+          following_count: data.following_count,
+        }));
+      }
+    } catch (err) {
+      console.error('Error toggling follow:', err);
+    }
+  };
+
+  // Auth Screen
   if (!token) {
     return (
       <div style={{ maxWidth: '420px', margin: '80px auto', padding: '24px', fontFamily: 'system-ui, sans-serif', border: '1px solid #e5e7eb', borderRadius: '16px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
@@ -298,7 +303,6 @@ export default function App() {
     );
   }
 
-  // 4. Main Authenticated View
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif', borderLeft: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', minHeight: '100vh' }}>
       {/* Top Header */}
@@ -341,14 +345,77 @@ export default function App() {
         </div>
       </header>
 
-      {/* Conditional: Profile Header Banner OR Tweet Composer */}
+      {/* Tabs: "For you" / "Following" (Rendered on Home feed) */}
+      {!viewingProfile && (
+        <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
+          <button
+            onClick={() => setFeedTab('for_you')}
+            style={{
+              flex: 1,
+              padding: '14px 0',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: feedTab === 'for_you' ? '700' : '500',
+              color: feedTab === 'for_you' ? '#0f1419' : '#536471',
+              position: 'relative',
+              fontSize: '15px',
+            }}
+          >
+            For you
+            {feedTab === 'for_you' && (
+              <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '56px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
+            )}
+          </button>
+          <button
+            onClick={() => setFeedTab('following')}
+            style={{
+              flex: 1,
+              padding: '14px 0',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: feedTab === 'following' ? '700' : '500',
+              color: feedTab === 'following' ? '#0f1419' : '#536471',
+              position: 'relative',
+              fontSize: '15px',
+            }}
+          >
+            Following
+            {feedTab === 'following' && (
+              <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '68px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Profile Header or Tweet Composer */}
       {viewingProfile ? (
         <div style={{ padding: '20px 16px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
               {profileData?.username ? profileData.username[0].toUpperCase() : 'U'}
             </div>
+
+            {currentUser && currentUser.username !== profileData?.username && (
+              <button
+                onClick={() => handleToggleFollow(profileData.username)}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '9999px',
+                  fontWeight: 'bold',
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  border: profileData?.is_following ? '1px solid #cfd9de' : 'none',
+                  backgroundColor: profileData?.is_following ? '#ffffff' : '#0f1419',
+                  color: profileData?.is_following ? '#0f1419' : '#ffffff',
+                }}
+              >
+                {profileData?.is_following ? 'Following' : 'Follow'}
+              </button>
+            )}
           </div>
+
           <h2 style={{ fontSize: '20px', fontWeight: '800', margin: '12px 0 2px 0' }}>
             {profileData?.username}
           </h2>
@@ -356,10 +423,19 @@ export default function App() {
             @{profileData?.username}
           </p>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#6b7280', fontSize: '13px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#6b7280', fontSize: '13px', marginBottom: '14px' }}>
             <Calendar size={14} />
             <span>
               Joined {profileData?.created_at ? new Date(profileData.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : ''}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '18px', fontSize: '14px' }}>
+            <span>
+              <strong>{profileData?.following_count || 0}</strong> <span style={{ color: '#6b7280' }}>Following</span>
+            </span>
+            <span>
+              <strong>{profileData?.followers_count || 0}</strong> <span style={{ color: '#6b7280' }}>Followers</span>
             </span>
           </div>
         </div>
@@ -399,9 +475,16 @@ export default function App() {
 
       {/* Feed Stream */}
       {loading ? (
-        <p style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading...</p>
+        <p style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading feed...</p>
       ) : tweets.length === 0 ? (
-        <p style={{ textAlign: 'center', padding: '32px', color: '#6b7280' }}>No tweets found.</p>
+        <div style={{ textAlign: 'center', padding: '40px 16px' }}>
+          <p style={{ fontSize: '18px', fontWeight: 'bold', color: '#0f1419', marginBottom: '6px' }}>
+            {feedTab === 'following' ? "You aren't following anyone yet" : 'No tweets yet'}
+          </p>
+          <p style={{ color: '#536471', fontSize: '14px' }}>
+            {feedTab === 'following' ? 'Follow accounts to see their latest tweets here.' : 'Be the first to post something!'}
+          </p>
+        </div>
       ) : (
         <div>
           {tweets.map((tweet) => {
