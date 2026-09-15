@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@rails/actioncable": "^7.2.302",
     "lucide-react": "^1.46.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

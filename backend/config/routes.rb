@@ -1,20 +1,20 @@
 Rails.application.routes.draw do
+  # Mount ActionCable WebSocket server
+  mount ActionCable.server => "/cable"
+
   namespace :api do
     namespace :v1 do
       post "auth/signup", to: "auth#signup"
-      post "auth/login",  to: "auth#login"
-
-      resources :users, only: [:show], param: :username do
-        member do
-          post :follow # Toggles follow/unfollow
-        end
-      end
+      post "auth/login", to: "auth#login"
 
       resources :tweets, only: [:index, :show, :create, :destroy] do
         member do
           post :like
         end
       end
+
+      get "users/:username", to: "users#show"
+      post "users/:username/follow", to: "users#follow"
     end
   end
 end

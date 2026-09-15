@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createConsumer } from '@rails/actioncable';
 import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send, Image, X } from 'lucide-react';
 
 const BASE_URL = 'http://localhost:3000/api/v1';
+const CABLE_URL = 'ws://localhost:3000/cable';
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('token') || '');
@@ -120,6 +122,7 @@ export default function App() {
     }
   }, [getAuthHeaders]);
 
+  // Master view loader
   useEffect(() => {
     if (currentView === 'profile' && viewingProfile) {
       loadUserProfile(viewingProfile);
@@ -127,6 +130,52 @@ export default function App() {
       loadInitialFeed();
     }
   }, [currentView, viewingProfile, feedTab, loadInitialFeed, loadUserProfile]);
+
+  // ActionCable WebSocket Real-time Listener
+  useEffect(() => {
+    const consumer = createConsumer(CABLE_URL);
+
+    const subscription = consumer.subscriptions.create('FeedChannel', {
+      received(data) {
+        if (!data || !data.tweet) return;
+
+        if (data.type === 'NEW_TWEET') {
+          setTweets((prev) => {
+            // Deduplicate if already added via HTTP response
+            if (prev.some((t) => t.id === data.tweet.id)) return prev;
+            return [data.tweet, ...prev];
+          });
+        } else if (data.type === 'NEW_REPLY') {
+          const parentId = data.tweet.parent_id;
+
+          // Increment replies count on the parent card
+          setTweets((prev) =>
+            prev.map((t) =>
+              t.id === parentId ? { ...t, replies_count: (t.replies_count || 0) + 1 } : t
+            )
+          );
+
+          // Prepend reply if this post's comment drawer is open
+          setCommentsMap((prev) => {
+            if (!prev[parentId]?.open) return prev;
+            if (prev[parentId]?.replies.some((r) => r.id === data.tweet.id)) return prev;
+            return {
+              ...prev,
+              [parentId]: {
+                ...prev[parentId],
+                replies: [data.tweet, ...prev[parentId].replies],
+              },
+            };
+          });
+        }
+      },
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      consumer.disconnect();
+    };
+  }, []);
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -168,7 +217,7 @@ export default function App() {
     localStorage.removeItem('user');
   };
 
-  // Image File Handling
+  // Image Selection & Preview
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -184,7 +233,7 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Create Tweet with Image via multipart/form-data
+  // Create Tweet
   const handleCreateTweet = async (e) => {
     e.preventDefault();
     if ((!content.trim() && !selectedImage) || !token || isPosting) return;
@@ -203,7 +252,10 @@ export default function App() {
 
       if (res.ok) {
         const newTweet = await res.json();
-        setTweets((prev) => [newTweet, ...prev]);
+        setTweets((prev) => {
+          if (prev.some((t) => t.id === newTweet.id)) return prev;
+          return [newTweet, ...prev];
+        });
         setContent('');
         removeSelectedImage();
       } else if (res.status === 401) {
@@ -291,7 +343,9 @@ export default function App() {
           ...prev,
           [tweetId]: {
             ...prev[tweetId],
-            replies: [newReply, ...(prev[tweetId]?.replies || [])],
+            replies: prev[tweetId]?.replies.some((r) => r.id === newReply.id)
+              ? prev[tweetId].replies
+              : [newReply, ...(prev[tweetId]?.replies || [])],
             replyText: '',
             submitting: false,
           },
@@ -556,7 +610,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Profile Header or Main Feed Tabs */}
+      {/* Profile Header or Composer */}
       {currentView === 'profile' ? (
         <div style={{ padding: '20px 16px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -645,7 +699,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Tweet Composer with Media Attachment */}
+          {/* Tweet Composer */}
           <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
             <textarea
               rows="3"
@@ -656,7 +710,6 @@ export default function App() {
               style={{ width: '100%', border: 'none', outline: 'none', fontSize: '18px', resize: 'none', boxSizing: 'border-box' }}
             />
 
-            {/* Attached Image Preview */}
             {imagePreview && (
               <div style={{ position: 'relative', margin: '10px 0', borderRadius: '16px', overflow: 'hidden', maxHeight: '300px', border: '1px solid #e5e7eb' }}>
                 <img src={imagePreview} alt="Upload preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -801,7 +854,6 @@ export default function App() {
                       </p>
                     )}
 
-                    {/* Display Attached Tweet Image */}
                     {tweet.image_url && (
                       <div style={{ margin: '8px 0 12px 0', borderRadius: '16px', overflow: 'hidden', border: '1px solid #e5e7eb', maxHeight: '380px' }}>
                         <img

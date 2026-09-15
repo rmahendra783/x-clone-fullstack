@@ -70,7 +70,15 @@ module Api
         tweet.replies_count = 0
 
         if tweet.save
-          render json: format_single_tweet(tweet, current_user), status: :created
+          payload = format_single_tweet(tweet, current_user)
+
+          # Real-time WebSocket Broadcast
+          ActionCable.server.broadcast("feed_channel", {
+            type: tweet.parent_id.present? ? "NEW_REPLY" : "NEW_TWEET",
+            tweet: payload
+          })
+
+          render json: payload, status: :created
         else
           render json: { errors: tweet.errors.full_messages }, status: :unprocessable_entity
         end
@@ -122,7 +130,6 @@ module Api
         end
       end
 
-      # Fixed signature: tweet is required, req_user defaults to nil
       def format_single_tweet(tweet, req_user = nil)
         image_url = nil
         if tweet.image.attached?
