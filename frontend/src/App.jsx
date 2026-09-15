@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2 } from 'lucide-react';
+import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send } from 'lucide-react';
 
 const BASE_URL = 'http://localhost:3000/api/v1';
 
@@ -14,17 +14,21 @@ export default function App() {
   const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
   const [authError, setAuthError] = useState('');
 
-  // Feed Tabs & Pagination State
+  // Navigation State
+  const [currentView, setCurrentView] = useState('home'); // 'home' | 'profile'
+  const [viewingProfile, setViewingProfile] = useState(null);
+
+  // Feed & Timeline State
   const [feedTab, setFeedTab] = useState('for_you'); // 'for_you' | 'following'
   const [tweets, setTweets] = useState([]);
+  const [profileData, setProfileData] = useState(null);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState(null);
 
-  // Profile View State
-  const [viewingProfile, setViewingProfile] = useState(null);
-  const [profileData, setProfileData] = useState(null);
+  // Inline Comment Expansion State (Maps tweet_id -> { open: bool, loading: bool, replies: [], replyText: '' })
+  const [commentsMap, setCommentsMap] = useState({});
 
   const observerRef = useRef(null);
 
@@ -37,7 +41,6 @@ export default function App() {
     return headers;
   }, [token]);
 
-  // Initial feed loader
   const loadInitialFeed = useCallback(async () => {
     setLoading(true);
     setNextCursor(null);
@@ -49,17 +52,16 @@ export default function App() {
       const res = await fetch(url, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
-        setTweets(data.tweets);
+        setTweets(data.tweets || []);
         setNextCursor(data.next_cursor);
       }
     } catch (err) {
-      console.error('Failed to fetch initial feed:', err);
+      console.error('Failed to load feed:', err);
     } finally {
       setLoading(false);
     }
   }, [feedTab, getAuthHeaders]);
 
-  // Next page loader for infinite scroll
   const loadMoreTweets = useCallback(async () => {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
@@ -72,7 +74,7 @@ export default function App() {
       const res = await fetch(url, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
-        setTweets((prev) => [...prev, ...data.tweets]);
+        setTweets((prev) => [...prev, ...(data.tweets || [])]);
         setNextCursor(data.next_cursor);
       }
     } catch (err) {
@@ -82,9 +84,8 @@ export default function App() {
     }
   }, [nextCursor, loadingMore, feedTab, getAuthHeaders]);
 
-  // IntersectionObserver trigger
   const lastTweetSentinelRef = useCallback((node) => {
-    if (loading || loadingMore) return;
+    if (loading || loadingMore || currentView !== 'home') return;
     if (observerRef.current) observerRef.current.disconnect();
 
     observerRef.current = new IntersectionObserver((entries) => {
@@ -94,7 +95,7 @@ export default function App() {
     });
 
     if (node) observerRef.current.observe(node);
-  }, [loading, loadingMore, nextCursor, loadMoreTweets]);
+  }, [loading, loadingMore, nextCursor, currentView, loadMoreTweets]);
 
   const loadUserProfile = useCallback(async (username) => {
     setLoading(true);
@@ -105,24 +106,25 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setProfileData(data.user);
-        setTweets(data.tweets);
+        setTweets(data.tweets || []);
         setNextCursor(null);
       }
     } catch (err) {
-      console.error('Failed to fetch profile:', err);
+      console.error('Failed to load profile:', err);
     } finally {
       setLoading(false);
     }
   }, [getAuthHeaders]);
 
   useEffect(() => {
-    if (viewingProfile) {
+    if (currentView === 'profile' && viewingProfile) {
       loadUserProfile(viewingProfile);
     } else {
       loadInitialFeed();
     }
-  }, [viewingProfile, feedTab, loadUserProfile, loadInitialFeed]);
+  }, [currentView, viewingProfile, feedTab, loadInitialFeed, loadUserProfile]);
 
+  // Auth Handling
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -157,11 +159,13 @@ export default function App() {
   const handleLogout = () => {
     setToken('');
     setCurrentUser(null);
+    setCurrentView('home');
     setViewingProfile(null);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   };
 
+  // Top-Level Tweet Creation
   const handleCreateTweet = async (e) => {
     e.preventDefault();
     if (!content.trim() || !token) return;
@@ -175,7 +179,7 @@ export default function App() {
 
       if (res.ok) {
         const newTweet = await res.json();
-        setTweets([newTweet, ...tweets]);
+        setTweets((prev) => [newTweet, ...prev]);
         setContent('');
       } else if (res.status === 401) {
         handleLogout();
@@ -185,7 +189,151 @@ export default function App() {
     }
   };
 
-  const handleDeleteTweet = async (id) => {
+  // Toggle Inline Comments Section (FB / Insta Style)
+  const toggleComments = async (tweetId) => {
+    const isCurrentlyOpen = commentsMap[tweetId]?.open;
+
+    if (isCurrentlyOpen) {
+      setCommentsMap((prev) => ({
+        ...prev,
+        [tweetId]: { ...prev[tweetId], open: false },
+      }));
+      return;
+    }
+
+    // Open & Load existing comments from backend
+    setCommentsMap((prev) => ({
+      ...prev,
+      [tweetId]: { open: true, loading: true, replies: prev[tweetId]?.replies || [], replyText: '' },
+    }));
+
+    try {
+      const res = await fetch(`${BASE_URL}/tweets/${tweetId}`, {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // Sort newest first client-side as safeguard
+        const sortedReplies = (data.replies || []).sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
+
+        setCommentsMap((prev) => ({
+          ...prev,
+          [tweetId]: {
+            open: true,
+            loading: false,
+            replies: sortedReplies,
+            replyText: prev[tweetId]?.replyText || '',
+          },
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to load comments:', err);
+      setCommentsMap((prev) => ({
+        ...prev,
+        [tweetId]: { ...prev[tweetId], loading: false },
+      }));
+    }
+  };
+
+  // Post Inline Comment (Prepend to top)
+  const handlePostComment = async (tweetId) => {
+    const commentText = commentsMap[tweetId]?.replyText?.trim();
+    if (!commentText || !token) return;
+
+    try {
+      const res = await fetch(`${BASE_URL}/tweets`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          tweet: {
+            content: commentText,
+            parent_id: tweetId,
+          },
+        }),
+      });
+
+      if (res.ok) {
+        const newReply = await res.json();
+
+        // 1. Prepend new reply so newest appears first
+        setCommentsMap((prev) => ({
+          ...prev,
+          [tweetId]: {
+            ...prev[tweetId],
+            replies: [newReply, ...(prev[tweetId]?.replies || [])],
+            replyText: '',
+          },
+        }));
+
+        // 2. Increment comment count on the tweet card
+        setTweets((prev) =>
+          prev.map((t) =>
+            t.id === tweetId ? { ...t, replies_count: (t.replies_count || 0) + 1 } : t
+          )
+        );
+      }
+    } catch (err) {
+      console.error('Failed to post comment:', err);
+    }
+  };
+
+  // Like Toggle
+  const handleLikeTweet = async (id) => {
+    if (!token) return alert('Please log in to like tweets.');
+
+    const updateLike = (item) => {
+      if (item.id !== id) return item;
+      const isLiked = item.liked_by_current_user || false;
+      return {
+        ...item,
+        liked_by_current_user: !isLiked,
+        likes_count: isLiked ? Math.max(0, (item.likes_count || 0) - 1) : (item.likes_count || 0) + 1,
+      };
+    };
+
+    setTweets((prev) => prev.map(updateLike));
+
+    // Also update likes inside expanded comments if applicable
+    setCommentsMap((prev) => {
+      const updated = { ...prev };
+      Object.keys(updated).forEach((pid) => {
+        if (updated[pid]?.replies) {
+          updated[pid].replies = updated[pid].replies.map(updateLike);
+        }
+      });
+      return updated;
+    });
+
+    try {
+      const res = await fetch(`${BASE_URL}/tweets/${id}/like`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const syncServer = (item) =>
+          item.id === id ? { ...item, likes_count: data.likes_count, liked_by_current_user: data.liked } : item;
+
+        setTweets((prev) => prev.map(syncServer));
+        setCommentsMap((prev) => {
+          const updated = { ...prev };
+          Object.keys(updated).forEach((pid) => {
+            if (updated[pid]?.replies) {
+              updated[pid].replies = updated[pid].replies.map(syncServer);
+            }
+          });
+          return updated;
+        });
+      }
+    } catch (err) {
+      console.error('Error liking tweet:', err);
+    }
+  };
+
+  // Delete Tweet or Comment
+  const handleDeleteTweet = async (id, parentId = null) => {
     if (!token) return;
     try {
       const res = await fetch(`${BASE_URL}/tweets/${id}`, {
@@ -193,53 +341,30 @@ export default function App() {
         headers: getAuthHeaders(),
       });
       if (res.ok) {
-        setTweets((prev) => prev.filter((t) => t.id !== id));
+        if (parentId) {
+          // It was a reply inside an expanded list
+          setCommentsMap((prev) => ({
+            ...prev,
+            [parentId]: {
+              ...prev[parentId],
+              replies: prev[parentId].replies.filter((r) => r.id !== id),
+            },
+          }));
+          setTweets((prev) =>
+            prev.map((t) =>
+              t.id === parentId ? { ...t, replies_count: Math.max(0, (t.replies_count || 1) - 1) } : t
+            )
+          );
+        } else {
+          setTweets((prev) => prev.filter((t) => t.id !== id));
+        }
       }
     } catch (err) {
       console.error('Error deleting tweet:', err);
     }
   };
 
-  const handleLikeTweet = async (id) => {
-    if (!token) return alert('Please log in to like tweets.');
-
-    const targetTweet = tweets.find((t) => t.id === id);
-    if (!targetTweet) return;
-
-    const isCurrentlyLiked = targetTweet.liked_by_current_user || false;
-    const optimisticCount = isCurrentlyLiked
-      ? Math.max(0, (targetTweet.likes_count || 0) - 1)
-      : (targetTweet.likes_count || 0) + 1;
-
-    setTweets((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? { ...t, likes_count: optimisticCount, liked_by_current_user: !isCurrentlyLiked }
-          : t
-      )
-    );
-
-    try {
-      const res = await fetch(`${BASE_URL}/tweets/${id}/like`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setTweets((prev) =>
-          prev.map((t) =>
-            t.id === id
-              ? { ...t, likes_count: data.likes_count, liked_by_current_user: data.liked }
-              : t
-          )
-        );
-      }
-    } catch (err) {
-      console.error('Error liking tweet:', err);
-    }
-  };
-
+  // Follow Toggle
   const handleToggleFollow = async (targetUsername) => {
     if (!token) return alert('Please log in to follow users.');
 
@@ -261,6 +386,16 @@ export default function App() {
     } catch (err) {
       console.error('Error toggling follow:', err);
     }
+  };
+
+  const navigateToProfile = (username) => {
+    setViewingProfile(username);
+    setCurrentView('profile');
+  };
+
+  const navigateToHome = () => {
+    setCurrentView('home');
+    setViewingProfile(null);
   };
 
   if (!token) {
@@ -345,11 +480,12 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif', borderLeft: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', minHeight: '100vh' }}>
+      {/* Header */}
       <header style={{ padding: '12px 16px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, backgroundColor: '#ffffffcc', backdropFilter: 'blur(8px)', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          {viewingProfile && (
+          {currentView === 'profile' && (
             <button
-              onClick={() => setViewingProfile(null)}
+              onClick={navigateToHome}
               style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
             >
               <ArrowLeft size={20} />
@@ -357,9 +493,9 @@ export default function App() {
           )}
           <div>
             <h1 style={{ fontSize: '18px', fontWeight: 'bold', margin: 0 }}>
-              {viewingProfile ? profileData?.username : 'Home'}
+              {currentView === 'profile' ? profileData?.username : 'Home'}
             </h1>
-            {viewingProfile && (
+            {currentView === 'profile' && (
               <span style={{ fontSize: '12px', color: '#6b7280' }}>
                 {profileData?.tweets_count || 0} Tweets
               </span>
@@ -369,7 +505,7 @@ export default function App() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button
-            onClick={() => setViewingProfile(currentUser.username)}
+            onClick={() => navigateToProfile(currentUser.username)}
             style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#1d9bf0' }}
           >
             @{currentUser?.username}
@@ -384,50 +520,8 @@ export default function App() {
         </div>
       </header>
 
-      {!viewingProfile && (
-        <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
-          <button
-            onClick={() => setFeedTab('for_you')}
-            style={{
-              flex: 1,
-              padding: '14px 0',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: feedTab === 'for_you' ? '700' : '500',
-              color: feedTab === 'for_you' ? '#0f1419' : '#536471',
-              position: 'relative',
-              fontSize: '15px',
-            }}
-          >
-            For you
-            {feedTab === 'for_you' && (
-              <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '56px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
-            )}
-          </button>
-          <button
-            onClick={() => setFeedTab('following')}
-            style={{
-              flex: 1,
-              padding: '14px 0',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: feedTab === 'following' ? '700' : '500',
-              color: feedTab === 'following' ? '#0f1419' : '#536471',
-              position: 'relative',
-              fontSize: '15px',
-            }}
-          >
-            Following
-            {feedTab === 'following' && (
-              <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '68px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
-            )}
-          </button>
-        </div>
-      )}
-
-      {viewingProfile ? (
+      {/* Profile Header or Main Feed Tabs */}
+      {currentView === 'profile' ? (
         <div style={{ padding: '20px 16px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
@@ -473,41 +567,85 @@ export default function App() {
           </div>
         </div>
       ) : (
-        <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
-          <textarea
-            rows="3"
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="What is happening?!"
-            maxLength={280}
-            style={{ width: '100%', border: 'none', outline: 'none', fontSize: '18px', resize: 'none', boxSizing: 'border-box' }}
-          />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
-            <span style={{ fontSize: '12px', color: content.length > 250 ? 'red' : '#6b7280' }}>
-              {280 - content.length} characters left
-            </span>
+        <>
+          <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
             <button
-              type="submit"
-              disabled={!content.trim()}
+              onClick={() => setFeedTab('for_you')}
               style={{
-                backgroundColor: '#1d9bf0',
-                color: '#fff',
+                flex: 1,
+                padding: '14px 0',
+                background: 'none',
                 border: 'none',
-                padding: '8px 18px',
-                borderRadius: '9999px',
-                fontWeight: 'bold',
-                cursor: content.trim() ? 'pointer' : 'not-allowed',
-                opacity: content.trim() ? 1 : 0.6,
+                cursor: 'pointer',
+                fontWeight: feedTab === 'for_you' ? '700' : '500',
+                color: feedTab === 'for_you' ? '#0f1419' : '#536471',
+                position: 'relative',
+                fontSize: '15px',
               }}
             >
-              Post
+              For you
+              {feedTab === 'for_you' && (
+                <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '56px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
+              )}
+            </button>
+            <button
+              onClick={() => setFeedTab('following')}
+              style={{
+                flex: 1,
+                padding: '14px 0',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: feedTab === 'following' ? '700' : '500',
+                color: feedTab === 'following' ? '#0f1419' : '#536471',
+                position: 'relative',
+                fontSize: '15px',
+              }}
+            >
+              Following
+              {feedTab === 'following' && (
+                <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '68px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
+              )}
             </button>
           </div>
-        </form>
+
+          <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
+            <textarea
+              rows="3"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="What is happening?!"
+              maxLength={280}
+              style={{ width: '100%', border: 'none', outline: 'none', fontSize: '18px', resize: 'none', boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+              <span style={{ fontSize: '12px', color: content.length > 250 ? 'red' : '#6b7280' }}>
+                {280 - content.length} characters left
+              </span>
+              <button
+                type="submit"
+                disabled={!content.trim()}
+                style={{
+                  backgroundColor: '#1d9bf0',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '8px 18px',
+                  borderRadius: '9999px',
+                  fontWeight: 'bold',
+                  cursor: content.trim() ? 'pointer' : 'not-allowed',
+                  opacity: content.trim() ? 1 : 0.6,
+                }}
+              >
+                Post
+              </button>
+            </div>
+          </form>
+        </>
       )}
 
+      {/* Main Feed Stream */}
       {loading ? (
-        <p style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading feed...</p>
+        <p style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading tweets...</p>
       ) : tweets.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '40px 16px' }}>
           <p style={{ fontSize: '18px', fontWeight: 'bold', color: '#0f1419', marginBottom: '6px' }}>
@@ -523,84 +661,233 @@ export default function App() {
             const isLiked = tweet.liked_by_current_user || false;
             const isAuthor = currentUser && tweet.username === currentUser.username;
             const isLastItem = index === tweets.length - 1;
+            const commentState = commentsMap[tweet.id] || { open: false, loading: false, replies: [], replyText: '' };
 
             return (
-              <article
+              <div
                 key={tweet.id}
-                ref={isLastItem && !viewingProfile ? lastTweetSentinelRef : null}
-                style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: '12px' }}
+                ref={isLastItem && currentView === 'home' ? lastTweetSentinelRef : null}
+                style={{ borderBottom: '1px solid #e5e7eb' }}
               >
-                <div
-                  onClick={() => setViewingProfile(tweet.username)}
-                  style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', flexShrink: 0, cursor: 'pointer' }}
-                >
-                  {tweet.username ? tweet.username[0].toUpperCase() : 'U'}
-                </div>
+                {/* Main Tweet Body */}
+                <article style={{ padding: '16px', display: 'flex', gap: '12px', backgroundColor: '#ffffff' }}>
+                  <div
+                    onClick={() => navigateToProfile(tweet.username)}
+                    style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', flexShrink: 0, cursor: 'pointer' }}
+                  >
+                    {tweet.username ? tweet.username[0].toUpperCase() : 'U'}
+                  </div>
 
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <button
-                      onClick={() => setViewingProfile(tweet.username)}
-                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', color: 'inherit' }}
-                    >
-                      @{tweet.username}
-                    </button>
-                    {isAuthor && (
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <button
-                        onClick={() => handleDeleteTweet(tweet.id)}
-                        title="Delete Tweet"
-                        style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
+                        onClick={() => navigateToProfile(tweet.username)}
+                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', color: 'inherit' }}
                       >
-                        <Trash2 size={16} />
+                        @{tweet.username}
                       </button>
+                      {isAuthor && (
+                        <button
+                          onClick={() => handleDeleteTweet(tweet.id)}
+                          title="Delete Tweet"
+                          style={{ background: 'transparent', border: 'none', color: '#9ca3af', cursor: 'pointer' }}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+
+                    <p style={{ margin: '6px 0 12px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word', color: '#0f1419' }}>
+                      {tweet.content}
+                    </p>
+
+                    <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
+                      {/* Comment Toggle Button (FB / Insta style) */}
+                      <button
+                        onClick={() => toggleComments(tweet.id)}
+                        title="View / Post Comments"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontSize: '13px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: commentState.open ? '#1d9bf0' : '#6b7280',
+                          cursor: 'pointer',
+                          padding: 0,
+                          fontWeight: commentState.open ? '600' : 'normal',
+                        }}
+                      >
+                        <MessageCircle size={16} />
+                        {tweet.replies_count || 0}
+                      </button>
+
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+                        <Repeat2 size={16} /> 0
+                      </span>
+
+                      <button
+                        onClick={() => handleLikeTweet(tweet.id)}
+                        title={isLiked ? 'Unlike' : 'Like'}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontSize: '13px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: isLiked ? '#ef4444' : '#6b7280',
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                      >
+                        <Heart
+                          size={16}
+                          fill={isLiked ? '#ef4444' : 'none'}
+                          stroke={isLiked ? '#ef4444' : 'currentColor'}
+                        />
+                        {tweet.likes_count || 0}
+                      </button>
+                    </div>
+                  </div>
+                </article>
+
+                {/* FB/Insta Style Inline Expandable Comments Section */}
+                {commentState.open && (
+                  <div style={{ backgroundColor: '#f9fafb', padding: '12px 16px 16px 56px', borderTop: '1px solid #f3f4f6' }}>
+                    {/* Add Comment Input Bar */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                      <input
+                        type="text"
+                        placeholder={`Reply to @${tweet.username}...`}
+                        value={commentState.replyText || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setCommentsMap((prev) => ({
+                            ...prev,
+                            [tweet.id]: { ...prev[tweet.id], replyText: val },
+                          }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handlePostComment(tweet.id);
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '8px 14px',
+                          borderRadius: '9999px',
+                          border: '1px solid #d1d5db',
+                          backgroundColor: '#ffffff',
+                          fontSize: '14px',
+                          outline: 'none',
+                        }}
+                      />
+                      <button
+                        onClick={() => handlePostComment(tweet.id)}
+                        disabled={!commentState.replyText?.trim()}
+                        style={{
+                          backgroundColor: '#1d9bf0',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '50%',
+                          width: '36px',
+                          height: '36px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: commentState.replyText?.trim() ? 'pointer' : 'not-allowed',
+                          opacity: commentState.replyText?.trim() ? 1 : 0.5,
+                        }}
+                      >
+                        <Send size={15} />
+                      </button>
+                    </div>
+
+                    {/* Comments List */}
+                    {commentState.loading ? (
+                      <p style={{ fontSize: '13px', color: '#6b7280', margin: '8px 0' }}>Loading comments...</p>
+                    ) : commentState.replies?.length === 0 ? (
+                      <p style={{ fontSize: '13px', color: '#9ca3af', margin: '8px 0' }}>No comments yet. Be the first to comment!</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {commentState.replies.map((reply) => {
+                          const isReplyLiked = reply.liked_by_current_user || false;
+                          const isReplyAuthor = currentUser && reply.username === currentUser.username;
+
+                          return (
+                            <div key={reply.id} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                              <div
+                                onClick={() => navigateToProfile(reply.username)}
+                                style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '12px', flexShrink: 0, cursor: 'pointer' }}
+                              >
+                                {reply.username ? reply.username[0].toUpperCase() : 'U'}
+                              </div>
+
+                              <div style={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '8px 12px', flex: 1 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span
+                                    onClick={() => navigateToProfile(reply.username)}
+                                    style={{ fontWeight: 'bold', fontSize: '13px', cursor: 'pointer' }}
+                                  >
+                                    @{reply.username}
+                                  </span>
+
+                                  {isReplyAuthor && (
+                                    <button
+                                      onClick={() => handleDeleteTweet(reply.id, tweet.id)}
+                                      title="Delete Comment"
+                                      style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', padding: 0 }}
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  )}
+                                </div>
+
+                                <p style={{ margin: '4px 0 6px 0', fontSize: '13px', color: '#1f2937', wordBreak: 'break-word' }}>
+                                  {reply.content}
+                                </p>
+
+                                <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+                                  <button
+                                    onClick={() => handleLikeTweet(reply.id)}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      background: 'none',
+                                      border: 'none',
+                                      color: isReplyLiked ? '#ef4444' : '#6b7280',
+                                      cursor: 'pointer',
+                                      padding: 0,
+                                      fontSize: '11px',
+                                    }}
+                                  >
+                                    <Heart size={12} fill={isReplyLiked ? '#ef4444' : 'none'} stroke={isReplyLiked ? '#ef4444' : 'currentColor'} />
+                                    {reply.likes_count || 0}
+                                  </button>
+                                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>
+                                    {new Date(reply.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                  <p style={{ margin: '6px 0 12px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word' }}>
-                    {tweet.content}
-                  </p>
-                  <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
-                      <MessageCircle size={16} /> 0
-                    </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
-                      <Repeat2 size={16} /> 0
-                    </span>
-                    <button
-                      onClick={() => handleLikeTweet(tweet.id)}
-                      title={isLiked ? 'Unlike' : 'Like'}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        fontSize: '13px',
-                        background: 'transparent',
-                        border: 'none',
-                        color: isLiked ? '#ef4444' : '#6b7280',
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    >
-                      <Heart
-                        size={16}
-                        fill={isLiked ? '#ef4444' : 'none'}
-                        stroke={isLiked ? '#ef4444' : 'currentColor'}
-                      />
-                      {tweet.likes_count || 0}
-                    </button>
-                  </div>
-                </div>
-              </article>
+                )}
+              </div>
             );
           })}
 
-          {/* Loading spinner at list bottom */}
           {loadingMore && (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px' }}>
               <Loader2 className="animate-spin" size={24} color="#1d9bf0" />
             </div>
           )}
 
-          {!nextCursor && tweets.length > 0 && !viewingProfile && (
+          {!nextCursor && tweets.length > 0 && currentView === 'home' && (
             <p style={{ textAlign: 'center', padding: '16px', color: '#9ca3af', fontSize: '13px' }}>
               You've reached the end of the feed.
             </p>
