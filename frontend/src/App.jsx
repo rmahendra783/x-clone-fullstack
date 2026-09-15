@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2 } from 'lucide-react';
 
 const BASE_URL = 'http://localhost:3000/api/v1';
 
@@ -14,36 +14,33 @@ export default function App() {
   const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
   const [authError, setAuthError] = useState('');
 
-  // Feed Tabs & Navigation State
+  // Feed Tabs & Pagination State
   const [feedTab, setFeedTab] = useState('for_you'); // 'for_you' | 'following'
   const [tweets, setTweets] = useState([]);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState(null);
+
+  // Profile View State
   const [viewingProfile, setViewingProfile] = useState(null);
   const [profileData, setProfileData] = useState(null);
 
-  useEffect(() => {
-    if (viewingProfile) {
-      loadUserProfile(viewingProfile);
-    } else {
-      loadTweets();
-    }
-  }, [token, viewingProfile, feedTab]);
+  const observerRef = useRef(null);
 
-  const getAuthHeaders = () => {
+  const getAuthHeaders = useCallback(() => {
     const headers = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     return headers;
-  };
+  }, [token]);
 
-  // GET: Feed according to active tab
-  const loadTweets = async () => {
+  // Initial feed loader
+  const loadInitialFeed = useCallback(async () => {
     setLoading(true);
+    setNextCursor(null);
     try {
       const url = feedTab === 'following'
         ? `${BASE_URL}/tweets?feed=following`
@@ -52,16 +49,54 @@ export default function App() {
       const res = await fetch(url, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
-        setTweets(data);
+        setTweets(data.tweets);
+        setNextCursor(data.next_cursor);
       }
     } catch (err) {
-      console.error('Failed to fetch tweets:', err);
+      console.error('Failed to fetch initial feed:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [feedTab, getAuthHeaders]);
 
-  const loadUserProfile = async (username) => {
+  // Next page loader for infinite scroll
+  const loadMoreTweets = useCallback(async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+
+    try {
+      const url = feedTab === 'following'
+        ? `${BASE_URL}/tweets?feed=following&cursor=${nextCursor}`
+        : `${BASE_URL}/tweets?cursor=${nextCursor}`;
+
+      const res = await fetch(url, { headers: getAuthHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setTweets((prev) => [...prev, ...data.tweets]);
+        setNextCursor(data.next_cursor);
+      }
+    } catch (err) {
+      console.error('Failed to load more tweets:', err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextCursor, loadingMore, feedTab, getAuthHeaders]);
+
+  // IntersectionObserver trigger
+  const lastTweetSentinelRef = useCallback((node) => {
+    if (loading || loadingMore) return;
+    if (observerRef.current) observerRef.current.disconnect();
+
+    observerRef.current = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && nextCursor) {
+        loadMoreTweets();
+      }
+    });
+
+    if (node) observerRef.current.observe(node);
+  }, [loading, loadingMore, nextCursor, loadMoreTweets]);
+
+  const loadUserProfile = useCallback(async (username) => {
     setLoading(true);
     try {
       const res = await fetch(`${BASE_URL}/users/${username}`, {
@@ -71,13 +106,22 @@ export default function App() {
         const data = await res.json();
         setProfileData(data.user);
         setTweets(data.tweets);
+        setNextCursor(null);
       }
     } catch (err) {
       console.error('Failed to fetch profile:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [getAuthHeaders]);
+
+  useEffect(() => {
+    if (viewingProfile) {
+      loadUserProfile(viewingProfile);
+    } else {
+      loadInitialFeed();
+    }
+  }, [viewingProfile, feedTab, loadUserProfile, loadInitialFeed]);
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -105,7 +149,7 @@ export default function App() {
       } else {
         setAuthError(data.error || (data.errors ? data.errors.join(', ') : 'Authentication failed'));
       }
-    } catch (err) {
+    } catch {
       setAuthError('Server unreachable. Please check backend.');
     }
   };
@@ -149,7 +193,7 @@ export default function App() {
         headers: getAuthHeaders(),
       });
       if (res.ok) {
-        setTweets(tweets.filter((t) => t.id !== id));
+        setTweets((prev) => prev.filter((t) => t.id !== id));
       }
     } catch (err) {
       console.error('Error deleting tweet:', err);
@@ -167,8 +211,8 @@ export default function App() {
       ? Math.max(0, (targetTweet.likes_count || 0) - 1)
       : (targetTweet.likes_count || 0) + 1;
 
-    setTweets(
-      tweets.map((t) =>
+    setTweets((prev) =>
+      prev.map((t) =>
         t.id === id
           ? { ...t, likes_count: optimisticCount, liked_by_current_user: !isCurrentlyLiked }
           : t
@@ -190,12 +234,9 @@ export default function App() {
               : t
           )
         );
-      } else {
-        viewingProfile ? loadUserProfile(viewingProfile) : loadTweets();
       }
     } catch (err) {
       console.error('Error liking tweet:', err);
-      viewingProfile ? loadUserProfile(viewingProfile) : loadTweets();
     }
   };
 
@@ -222,7 +263,6 @@ export default function App() {
     }
   };
 
-  // Auth Screen
   if (!token) {
     return (
       <div style={{ maxWidth: '420px', margin: '80px auto', padding: '24px', fontFamily: 'system-ui, sans-serif', border: '1px solid #e5e7eb', borderRadius: '16px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
@@ -305,7 +345,6 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif', borderLeft: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', minHeight: '100vh' }}>
-      {/* Top Header */}
       <header style={{ padding: '12px 16px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, backgroundColor: '#ffffffcc', backdropFilter: 'blur(8px)', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           {viewingProfile && (
@@ -345,7 +384,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Tabs: "For you" / "Following" (Rendered on Home feed) */}
       {!viewingProfile && (
         <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
           <button
@@ -389,7 +427,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Profile Header or Tweet Composer */}
       {viewingProfile ? (
         <div style={{ padding: '20px 16px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -431,12 +468,8 @@ export default function App() {
           </div>
 
           <div style={{ display: 'flex', gap: '18px', fontSize: '14px' }}>
-            <span>
-              <strong>{profileData?.following_count || 0}</strong> <span style={{ color: '#6b7280' }}>Following</span>
-            </span>
-            <span>
-              <strong>{profileData?.followers_count || 0}</strong> <span style={{ color: '#6b7280' }}>Followers</span>
-            </span>
+            <span><strong>{profileData?.following_count || 0}</strong> <span style={{ color: '#6b7280' }}>Following</span></span>
+            <span><strong>{profileData?.followers_count || 0}</strong> <span style={{ color: '#6b7280' }}>Followers</span></span>
           </div>
         </div>
       ) : (
@@ -473,7 +506,6 @@ export default function App() {
         </form>
       )}
 
-      {/* Feed Stream */}
       {loading ? (
         <p style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading feed...</p>
       ) : tweets.length === 0 ? (
@@ -487,12 +519,17 @@ export default function App() {
         </div>
       ) : (
         <div>
-          {tweets.map((tweet) => {
+          {tweets.map((tweet, index) => {
             const isLiked = tweet.liked_by_current_user || false;
             const isAuthor = currentUser && tweet.username === currentUser.username;
+            const isLastItem = index === tweets.length - 1;
 
             return (
-              <article key={tweet.id} style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: '12px' }}>
+              <article
+                key={tweet.id}
+                ref={isLastItem && !viewingProfile ? lastTweetSentinelRef : null}
+                style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: '12px' }}
+              >
                 <div
                   onClick={() => setViewingProfile(tweet.username)}
                   style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#0284c7', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', flexShrink: 0, cursor: 'pointer' }}
@@ -555,6 +592,19 @@ export default function App() {
               </article>
             );
           })}
+
+          {/* Loading spinner at list bottom */}
+          {loadingMore && (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px' }}>
+              <Loader2 className="animate-spin" size={24} color="#1d9bf0" />
+            </div>
+          )}
+
+          {!nextCursor && tweets.length > 0 && !viewingProfile && (
+            <p style={{ textAlign: 'center', padding: '16px', color: '#9ca3af', fontSize: '13px' }}>
+              You've reached the end of the feed.
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -6,27 +6,39 @@ module Api
       # Mutating operations require a valid JWT token; timeline reads remain open
       before_action :authenticate_request!, only: [:create, :destroy, :like]
 
-      # GET /api/v1/tweets?feed=following OR /api/v1/tweets (default: For You)
+      PAGE_SIZE = 10
+
+      # GET /api/v1/tweets?feed=following&cursor=123
       def index
         current_req_user = extract_optional_user
 
         tweets_scope = if params[:feed] == "following"
           if current_req_user
-            # Fetch tweets from users the current user follows + their own tweets
             followed_ids = current_req_user.following.select(:id)
             Tweet.where(user_id: followed_ids)
           else
             Tweet.none
           end
         else
-          # "For You" global feed
           Tweet.all
         end
 
-        # Eager load user and likes to eliminate N+1 queries
-        tweets = tweets_scope.includes(:user, :likes).order(created_at: :desc).limit(50)
+        # Keyset pagination: load records older than the provided cursor
+        if params[:cursor].present?
+          tweets_scope = tweets_scope.where("tweets.id < ?", params[:cursor].to_i)
+        end
 
-        rendered_tweets = tweets.map do |tweet|
+        # Request 1 extra record to determine if there is a next page
+        fetched = tweets_scope.includes(:user, :likes)
+                              .order(id: :desc)
+                              .limit(PAGE_SIZE + 1)
+                              .to_a
+
+        has_more = fetched.size > PAGE_SIZE
+        records = has_more ? fetched.first(PAGE_SIZE) : fetched
+        next_cursor = has_more ? records.last.id : nil
+
+        rendered_tweets = records.map do |tweet|
           {
             id: tweet.id,
             content: tweet.content,
@@ -37,9 +49,11 @@ module Api
           }
         end
 
-        render json: rendered_tweets, status: :ok
+        render json: {
+          tweets: rendered_tweets,
+          next_cursor: next_cursor
+        }, status: :ok
       end
-
       # POST /api/v1/tweets
       def create
         # Secure: Associate the tweet directly with current_user
