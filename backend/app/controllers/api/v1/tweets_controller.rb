@@ -8,7 +8,6 @@ module Api
 
       PAGE_SIZE = 10
 
-      # GET /api/v1/tweets
       def index
         current_req_user = extract_optional_user
 
@@ -21,6 +20,18 @@ module Api
           end
         else
           Tweet.root_tweets
+        end
+
+        # Keyword Search (?q=ruby)
+        if params[:q].present?
+          query = "%#{params[:q].strip.downcase}%"
+          tweets_scope = tweets_scope.where("LOWER(tweets.content) LIKE ?", query)
+        end
+
+        # Hashtag Filter (?tag=tech)
+        if params[:tag].present?
+          tag = params[:tag].delete("#").strip.downcase
+          tweets_scope = tweets_scope.where("LOWER(tweets.content) LIKE ?", "%##{tag}%")
         end
 
         if params[:cursor].present?

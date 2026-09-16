@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createConsumer } from '@rails/actioncable';
-import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send, Image, X } from 'lucide-react';
+import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send, Image, X, Search, Hash, User } from 'lucide-react';
 
 const BASE_URL = 'http://localhost:3000/api/v1';
 const CABLE_URL = 'ws://localhost:3000/cable';
@@ -20,10 +20,14 @@ export default function App() {
   const [currentView, setCurrentView] = useState('home'); // 'home' | 'profile'
   const [viewingProfile, setViewingProfile] = useState(null);
 
-  // Feed State
+  // Feed & Search State
   const [feedTab, setFeedTab] = useState('for_you'); // 'for_you' | 'following'
   const [tweets, setTweets] = useState([]);
   const [profileData, setProfileData] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTag, setActiveTag] = useState(null);
+  const [userSearchResults, setUserSearchResults] = useState([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
 
   // Composer State
   const [content, setContent] = useState('');
@@ -51,9 +55,15 @@ export default function App() {
     setLoading(true);
     setNextCursor(null);
     try {
-      const url = feedTab === 'following'
-        ? `${BASE_URL}/tweets?feed=following`
-        : `${BASE_URL}/tweets`;
+      let url = `${BASE_URL}/tweets?`;
+      if (feedTab === 'following' && !activeTag && !searchQuery.trim()) {
+        url += 'feed=following&';
+      }
+      if (activeTag) {
+        url += `tag=${encodeURIComponent(activeTag)}&`;
+      } else if (searchQuery.trim()) {
+        url += `q=${encodeURIComponent(searchQuery.trim())}&`;
+      }
 
       const res = await fetch(url, { headers: { ...getAuthHeaders(), 'Accept': 'application/json' } });
       if (res.ok) {
@@ -66,16 +76,22 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [feedTab, getAuthHeaders]);
+  }, [feedTab, activeTag, searchQuery, getAuthHeaders]);
 
   const loadMoreTweets = useCallback(async () => {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
 
     try {
-      const url = feedTab === 'following'
-        ? `${BASE_URL}/tweets?feed=following&cursor=${nextCursor}`
-        : `${BASE_URL}/tweets?cursor=${nextCursor}`;
+      let url = `${BASE_URL}/tweets?cursor=${nextCursor}&`;
+      if (feedTab === 'following' && !activeTag && !searchQuery.trim()) {
+        url += 'feed=following&';
+      }
+      if (activeTag) {
+        url += `tag=${encodeURIComponent(activeTag)}&`;
+      } else if (searchQuery.trim()) {
+        url += `q=${encodeURIComponent(searchQuery.trim())}&`;
+      }
 
       const res = await fetch(url, { headers: { ...getAuthHeaders(), 'Accept': 'application/json' } });
       if (res.ok) {
@@ -88,7 +104,7 @@ export default function App() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nextCursor, loadingMore, feedTab, getAuthHeaders]);
+  }, [nextCursor, loadingMore, feedTab, activeTag, searchQuery, getAuthHeaders]);
 
   const lastTweetSentinelRef = useCallback((node) => {
     if (loading || loadingMore || currentView !== 'home') return;
@@ -122,15 +138,42 @@ export default function App() {
     }
   }, [getAuthHeaders]);
 
+  // Live User Search Autocomplete (debounced)
+  useEffect(() => {
+    if (!searchQuery.trim() || activeTag) {
+      setUserSearchResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearchingUsers(true);
+      try {
+        const res = await fetch(`${BASE_URL}/users/search?q=${encodeURIComponent(searchQuery.trim())}`, {
+          headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUserSearchResults(data.users || []);
+        }
+      } catch (err) {
+        console.error('User search error:', err);
+      } finally {
+        setIsSearchingUsers(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, activeTag, getAuthHeaders]);
+
   useEffect(() => {
     if (currentView === 'profile' && viewingProfile) {
       loadUserProfile(viewingProfile);
     } else {
       loadInitialFeed();
     }
-  }, [currentView, viewingProfile, feedTab, loadInitialFeed, loadUserProfile]);
+  }, [currentView, viewingProfile, feedTab, activeTag, searchQuery, loadInitialFeed, loadUserProfile]);
 
-  // ActionCable Subscription for Tweets, Comments, Likes, and Deletions
+  // ActionCable Subscription
   useEffect(() => {
     const consumer = createConsumer(CABLE_URL);
 
@@ -139,6 +182,10 @@ export default function App() {
         if (!data) return;
 
         if (data.type === 'NEW_TWEET') {
+          // If searching or filtering by a tag, only prepend if matching
+          if (activeTag && !data.tweet.content?.toLowerCase().includes(`#${activeTag.toLowerCase()}`)) return;
+          if (searchQuery.trim() && !data.tweet.content?.toLowerCase().includes(searchQuery.trim().toLowerCase())) return;
+
           setTweets((prev) => {
             if (prev.some((t) => t.id === data.tweet.id)) return prev;
             return [data.tweet, ...prev];
@@ -167,7 +214,6 @@ export default function App() {
           const targetId = data.tweet_id;
           const isCurrentUserAction = currentUser && currentUser.id === data.user_id;
 
-          // Update feed items
           setTweets((prev) =>
             prev.map((t) => {
               if (t.id !== targetId) return t;
@@ -179,7 +225,6 @@ export default function App() {
             })
           );
 
-          // Update comment drawers if open
           setCommentsMap((prev) => {
             const updated = { ...prev };
             Object.keys(updated).forEach((pid) => {
@@ -221,7 +266,7 @@ export default function App() {
       subscription.unsubscribe();
       consumer.disconnect();
     };
-  }, [currentUser]);
+  }, [currentUser, activeTag, searchQuery]);
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -259,6 +304,8 @@ export default function App() {
     setCurrentUser(null);
     setCurrentView('home');
     setViewingProfile(null);
+    setSearchQuery('');
+    setActiveTag(null);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   };
@@ -525,11 +572,45 @@ export default function App() {
   const navigateToProfile = (username) => {
     setViewingProfile(username);
     setCurrentView('profile');
+    setUserSearchResults([]);
   };
 
   const navigateToHome = () => {
     setCurrentView('home');
     setViewingProfile(null);
+  };
+
+  const clearFilters = () => {
+    setActiveTag(null);
+    setSearchQuery('');
+    setUserSearchResults([]);
+  };
+
+  // Render tweet body with clickable hashtags (#tag)
+  const renderTweetContent = (text) => {
+    if (!text) return null;
+    const parts = text.split(/(\s+)/);
+
+    return parts.map((part, index) => {
+      if (part.startsWith('#') && part.length > 1) {
+        const tag = part.slice(1);
+        return (
+          <span
+            key={index}
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveTag(tag);
+              setSearchQuery('');
+              setCurrentView('home');
+            }}
+            style={{ color: '#1d9bf0', cursor: 'pointer', fontWeight: '500' }}
+          >
+            {part}
+          </span>
+        );
+      }
+      return part;
+    });
   };
 
   if (!token) {
@@ -615,47 +696,143 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif', borderLeft: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', minHeight: '100vh' }}>
-      {/* Header */}
-      <header style={{ padding: '12px 16px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, backgroundColor: '#ffffffcc', backdropFilter: 'blur(8px)', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          {currentView === 'profile' && (
-            <button
-              type="button"
-              onClick={navigateToHome}
-              style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
-            >
-              <ArrowLeft size={20} />
-            </button>
-          )}
-          <div>
+      {/* Sticky Header with Search */}
+      <header style={{ padding: '10px 16px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, backgroundColor: '#ffffffcc', backdropFilter: 'blur(8px)', zIndex: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+            {currentView === 'profile' && (
+              <button
+                type="button"
+                onClick={navigateToHome}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
+              >
+                <ArrowLeft size={20} />
+              </button>
+            )}
             <h1 style={{ fontSize: '18px', fontWeight: 'bold', margin: 0 }}>
               {currentView === 'profile' ? profileData?.username : 'Home'}
             </h1>
-            {currentView === 'profile' && (
-              <span style={{ fontSize: '12px', color: '#6b7280' }}>
-                {profileData?.tweets_count || 0} Tweets
-              </span>
+          </div>
+
+          {/* Search Box Input */}
+          <div style={{ flex: 1, position: 'relative', maxWidth: '320px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#eff3f4', borderRadius: '9999px', padding: '6px 12px' }}>
+              <Search size={16} color="#536471" style={{ flexShrink: 0 }} />
+              <input
+                type="text"
+                value={searchQuery}
+                placeholder="Search tweets or @users..."
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  if (activeTag) setActiveTag(null);
+                  if (currentView !== 'home') setCurrentView('home');
+                }}
+                style={{
+                  border: 'none',
+                  outline: 'none',
+                  background: 'transparent',
+                  paddingLeft: '8px',
+                  fontSize: '14px',
+                  width: '100%',
+                }}
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#536471', display: 'flex', alignItems: 'center' }}
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* User Autocomplete Dropdown */}
+            {userSearchResults.length > 0 && (
+              <div style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                marginTop: '6px',
+                backgroundColor: '#ffffff',
+                borderRadius: '12px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                border: '1px solid #e5e7eb',
+                overflow: 'hidden',
+                zIndex: 30,
+              }}>
+                <div style={{ padding: '6px 12px', fontSize: '11px', fontWeight: 'bold', color: '#6b7280', textTransform: 'uppercase' }}>
+                  Users
+                </div>
+                {userSearchResults.map((u) => (
+                  <div
+                    key={u.id}
+                    onClick={() => navigateToProfile(u.username)}
+                    style={{
+                      padding: '8px 12px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      borderTop: '1px solid #f3f4f6',
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f9fafb'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#ffffff'}
+                  >
+                    <User size={16} color="#1d9bf0" />
+                    <span style={{ fontWeight: 'bold' }}>@{u.username}</span>
+                  </div>
+                ))}
+              </div>
             )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => navigateToProfile(currentUser.username)}
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#1d9bf0' }}
+            >
+              @{currentUser?.username}
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Log Out"
+              style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
+            >
+              <LogOut size={18} />
+            </button>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <button
-            type="button"
-            onClick={() => navigateToProfile(currentUser.username)}
-            style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#1d9bf0' }}
-          >
-            @{currentUser?.username}
-          </button>
-          <button
-            type="button"
-            onClick={handleLogout}
-            title="Log Out"
-            style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
-          >
-            <LogOut size={18} />
-          </button>
-        </div>
+        {/* Active Tag / Search Query Filter Pill */}
+        {(activeTag || searchQuery) && currentView === 'home' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontSize: '13px' }}>
+            <span style={{ color: '#536471' }}>Filtering by:</span>
+            <span style={{
+              backgroundColor: '#e1f5fe',
+              color: '#0284c7',
+              padding: '2px 10px',
+              borderRadius: '9999px',
+              fontWeight: '600',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              {activeTag ? `#${activeTag}` : `"${searchQuery}"`}
+              <button
+                type="button"
+                onClick={clearFilters}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0284c7', padding: 0, display: 'flex', alignItems: 'center' }}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          </div>
+        )}
       </header>
 
       {/* Profile Header or Tab Navigator */}
@@ -707,142 +884,147 @@ export default function App() {
         </div>
       ) : (
         <>
-          <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
-            <button
-              type="button"
-              onClick={() => setFeedTab('for_you')}
-              style={{
-                flex: 1,
-                padding: '14px 0',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontWeight: feedTab === 'for_you' ? '700' : '500',
-                color: feedTab === 'for_you' ? '#0f1419' : '#536471',
-                position: 'relative',
-                fontSize: '15px',
-              }}
-            >
-              For you
-              {feedTab === 'for_you' && (
-                <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '56px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setFeedTab('following')}
-              style={{
-                flex: 1,
-                padding: '14px 0',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontWeight: feedTab === 'following' ? '700' : '500',
-                color: feedTab === 'following' ? '#0f1419' : '#536471',
-                position: 'relative',
-                fontSize: '15px',
-              }}
-            >
-              Following
-              {feedTab === 'following' && (
-                <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '68px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
-              )}
-            </button>
-          </div>
-
-          {/* Tweet Composer */}
-          <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
-            <textarea
-              rows="3"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="What is happening?!"
-              maxLength={280}
-              style={{ width: '100%', border: 'none', outline: 'none', fontSize: '18px', resize: 'none', boxSizing: 'border-box' }}
-            />
-
-            {imagePreview && (
-              <div style={{ position: 'relative', margin: '10px 0', borderRadius: '16px', overflow: 'hidden', maxHeight: '300px', border: '1px solid #e5e7eb' }}>
-                <img src={imagePreview} alt="Upload preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                <button
-                  type="button"
-                  onClick={removeSelectedImage}
-                  style={{
-                    position: 'absolute',
-                    top: '8px',
-                    right: '8px',
-                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '50%',
-                    width: '30px',
-                    height: '30px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            )}
-
-            <input
-              type="file"
-              accept="image/*"
-              ref={fileInputRef}
-              onChange={handleImageChange}
-              style={{ display: 'none' }}
-            />
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Add photo"
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: '#1d9bf0',
-                    cursor: 'pointer',
-                    padding: '6px',
-                    borderRadius: '50%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Image size={20} />
-                </button>
-                <span style={{ fontSize: '12px', color: content.length > 250 ? 'red' : '#6b7280' }}>
-                  {280 - content.length}
-                </span>
-              </div>
-
+          {/* Feed Tabs: Hidden while actively filtering to avoid state clash */}
+          {!activeTag && !searchQuery && (
+            <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
               <button
-                type="submit"
-                disabled={(!content.trim() && !selectedImage) || isPosting}
+                type="button"
+                onClick={() => setFeedTab('for_you')}
                 style={{
-                  backgroundColor: '#1d9bf0',
-                  color: '#fff',
+                  flex: 1,
+                  padding: '14px 0',
+                  background: 'none',
                   border: 'none',
-                  padding: '8px 18px',
-                  borderRadius: '9999px',
-                  fontWeight: 'bold',
-                  cursor: (content.trim() || selectedImage) && !isPosting ? 'pointer' : 'not-allowed',
-                  opacity: (content.trim() || selectedImage) && !isPosting ? 1 : 0.6,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
+                  cursor: 'pointer',
+                  fontWeight: feedTab === 'for_you' ? '700' : '500',
+                  color: feedTab === 'for_you' ? '#0f1419' : '#536471',
+                  position: 'relative',
+                  fontSize: '15px',
                 }}
               >
-                {isPosting && <Loader2 className="animate-spin" size={16} />}
-                {isPosting ? 'Posting...' : 'Post'}
+                For you
+                {feedTab === 'for_you' && (
+                  <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '56px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFeedTab('following')}
+                style={{
+                  flex: 1,
+                  padding: '14px 0',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontWeight: feedTab === 'following' ? '700' : '500',
+                  color: feedTab === 'following' ? '#0f1419' : '#536471',
+                  position: 'relative',
+                  fontSize: '15px',
+                }}
+              >
+                Following
+                {feedTab === 'following' && (
+                  <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '68px', height: '4px', backgroundColor: '#1d9bf0', borderRadius: '9999px' }} />
+                )}
               </button>
             </div>
-          </form>
+          )}
+
+          {/* Tweet Composer (Hidden while searching to preserve feed clarity) */}
+          {!activeTag && !searchQuery && (
+            <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
+              <textarea
+                rows="3"
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="What is happening?! (e.g. Learning #fullstack #react)"
+                maxLength={280}
+                style={{ width: '100%', border: 'none', outline: 'none', fontSize: '18px', resize: 'none', boxSizing: 'border-box' }}
+              />
+
+              {imagePreview && (
+                <div style={{ position: 'relative', margin: '10px 0', borderRadius: '16px', overflow: 'hidden', maxHeight: '300px', border: '1px solid #e5e7eb' }}>
+                  <img src={imagePreview} alt="Upload preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button
+                    type="button"
+                    onClick={removeSelectedImage}
+                    style={{
+                      position: 'absolute',
+                      top: '8px',
+                      right: '8px',
+                      backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '50%',
+                      width: '30px',
+                      height: '30px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              )}
+
+              <input
+                type="file"
+                accept="image/*"
+                ref={fileInputRef}
+                onChange={handleImageChange}
+                style={{ display: 'none' }}
+              />
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Add photo"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#1d9bf0',
+                      cursor: 'pointer',
+                      padding: '6px',
+                      borderRadius: '50%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Image size={20} />
+                  </button>
+                  <span style={{ fontSize: '12px', color: content.length > 250 ? 'red' : '#6b7280' }}>
+                    {280 - content.length}
+                  </span>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={(!content.trim() && !selectedImage) || isPosting}
+                  style={{
+                    backgroundColor: '#1d9bf0',
+                    color: '#fff',
+                    border: 'none',
+                    padding: '8px 18px',
+                    borderRadius: '9999px',
+                    fontWeight: 'bold',
+                    cursor: (content.trim() || selectedImage) && !isPosting ? 'pointer' : 'not-allowed',
+                    opacity: (content.trim() || selectedImage) && !isPosting ? 1 : 0.6,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  {isPosting && <Loader2 className="animate-spin" size={16} />}
+                  {isPosting ? 'Posting...' : 'Post'}
+                </button>
+              </div>
+            </form>
+          )}
         </>
       )}
 
@@ -852,10 +1034,20 @@ export default function App() {
       ) : tweets.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '40px 16px' }}>
           <p style={{ fontSize: '18px', fontWeight: 'bold', color: '#0f1419', marginBottom: '6px' }}>
-            {feedTab === 'following' ? "You aren't following anyone yet" : 'No tweets yet'}
+            {activeTag
+              ? `No tweets found with #${activeTag}`
+              : searchQuery
+              ? `No results for "${searchQuery}"`
+              : feedTab === 'following'
+              ? "You aren't following anyone yet"
+              : 'No tweets yet'}
           </p>
           <p style={{ color: '#536471', fontSize: '14px' }}>
-            {feedTab === 'following' ? 'Follow accounts to see their latest tweets here.' : 'Be the first to post something!'}
+            {activeTag || searchQuery
+              ? 'Try searching for something else or explore the main feed.'
+              : feedTab === 'following'
+              ? 'Follow accounts to see their latest tweets here.'
+              : 'Be the first to post something!'}
           </p>
         </div>
       ) : (
@@ -903,7 +1095,7 @@ export default function App() {
 
                     {tweet.content && (
                       <p style={{ margin: '6px 0 10px 0', fontSize: '15px', lineHeight: '1.4', wordBreak: 'break-word', color: '#0f1419' }}>
-                        {tweet.content}
+                        {renderTweetContent(tweet.content)}
                       </p>
                     )}
 
@@ -1064,7 +1256,7 @@ export default function App() {
                                 </div>
 
                                 <p style={{ margin: '4px 0 6px 0', fontSize: '13px', color: '#1f2937', wordBreak: 'break-word' }}>
-                                  {reply.content}
+                                  {renderTweetContent(reply.content)}
                                 </p>
 
                                 <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>

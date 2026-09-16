@@ -1,5 +1,4 @@
 Rails.application.routes.draw do
-  # Mount ActionCable WebSocket server
   mount ActionCable.server => "/cable"
 
   namespace :api do
@@ -13,6 +12,7 @@ Rails.application.routes.draw do
         end
       end
 
+      get "users/search", to: "users#search"
       get "users/:username", to: "users#show"
       post "users/:username/follow", to: "users#follow"
     end
