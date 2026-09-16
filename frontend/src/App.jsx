@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createConsumer } from '@rails/actioncable';
-import { MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, Loader2, Send, Image, X, Search, Hash, User } from 'lucide-react';
+import { 
+  MessageCircle, Heart, Repeat2, Trash2, LogOut, ArrowLeft, Calendar, 
+  Loader2, Send, Image, X, Search, Hash, User, Bell, UserPlus 
+} from 'lucide-react';
 
 const BASE_URL = 'http://localhost:3000/api/v1';
 const CABLE_URL = 'ws://localhost:3000/cable';
@@ -28,6 +31,11 @@ export default function App() {
   const [activeTag, setActiveTag] = useState(null);
   const [userSearchResults, setUserSearchResults] = useState([]);
   const [isSearchingUsers, setIsSearchingUsers] = useState(false);
+
+  // Notification State
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [showNotifications, setShowNotifications] = useState(false);
 
   // Composer State
   const [content, setContent] = useState('');
@@ -138,6 +146,22 @@ export default function App() {
     }
   }, [getAuthHeaders]);
 
+  const fetchNotifications = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${BASE_URL}/notifications`, {
+        headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNotifications(data.notifications || []);
+        setUnreadCount(data.unread_count || 0);
+      }
+    } catch (err) {
+      console.error('Failed to load notifications:', err);
+    }
+  }, [token, getAuthHeaders]);
+
   // Live User Search Autocomplete (debounced)
   useEffect(() => {
     if (!searchQuery.trim() || activeTag) {
@@ -173,16 +197,20 @@ export default function App() {
     }
   }, [currentView, viewingProfile, feedTab, activeTag, searchQuery, loadInitialFeed, loadUserProfile]);
 
-  // ActionCable Subscription
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
+
+  // ActionCable Subscriptions (FeedChannel + NotificationChannel)
   useEffect(() => {
     const consumer = createConsumer(CABLE_URL);
 
-    const subscription = consumer.subscriptions.create('FeedChannel', {
+    // Feed updates
+    const feedSub = consumer.subscriptions.create('FeedChannel', {
       received(data) {
         if (!data) return;
 
         if (data.type === 'NEW_TWEET') {
-          // If searching or filtering by a tag, only prepend if matching
           if (activeTag && !data.tweet.content?.toLowerCase().includes(`#${activeTag.toLowerCase()}`)) return;
           if (searchQuery.trim() && !data.tweet.content?.toLowerCase().includes(searchQuery.trim().toLowerCase())) return;
 
@@ -262,11 +290,44 @@ export default function App() {
       },
     });
 
+    // Notification updates
+    let notifSub = null;
+    if (currentUser?.id) {
+      notifSub = consumer.subscriptions.create(
+        { channel: 'NotificationChannel', user_id: currentUser.id },
+        {
+          received(notification) {
+            setNotifications((prev) => [notification, ...prev]);
+            setUnreadCount((count) => count + 1);
+          },
+        }
+      );
+    }
+
     return () => {
-      subscription.unsubscribe();
+      feedSub.unsubscribe();
+      if (notifSub) notifSub.unsubscribe();
       consumer.disconnect();
     };
   }, [currentUser, activeTag, searchQuery]);
+
+  const handleToggleNotifications = async () => {
+    const nextState = !showNotifications;
+    setShowNotifications(nextState);
+
+    if (nextState && unreadCount > 0) {
+      setUnreadCount(0);
+      try {
+        await fetch(`${BASE_URL}/notifications/mark_as_read`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+        });
+        setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      } catch (err) {
+        console.error('Failed to mark notifications read:', err);
+      }
+    }
+  };
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -306,6 +367,9 @@ export default function App() {
     setViewingProfile(null);
     setSearchQuery('');
     setActiveTag(null);
+    setNotifications([]);
+    setUnreadCount(0);
+    setShowNotifications(false);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   };
@@ -573,11 +637,13 @@ export default function App() {
     setViewingProfile(username);
     setCurrentView('profile');
     setUserSearchResults([]);
+    setShowNotifications(false);
   };
 
   const navigateToHome = () => {
     setCurrentView('home');
     setViewingProfile(null);
+    setShowNotifications(false);
   };
 
   const clearFilters = () => {
@@ -586,7 +652,6 @@ export default function App() {
     setUserSearchResults([]);
   };
 
-  // Render tweet body with clickable hashtags (#tag)
   const renderTweetContent = (text) => {
     if (!text) return null;
     const parts = text.split(/(\s+)/);
@@ -696,7 +761,7 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif', borderLeft: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', minHeight: '100vh' }}>
-      {/* Sticky Header with Search */}
+      {/* Sticky Header with Search & Notifications */}
       <header style={{ padding: '10px 16px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, backgroundColor: '#ffffffcc', backdropFilter: 'blur(8px)', zIndex: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
@@ -715,13 +780,13 @@ export default function App() {
           </div>
 
           {/* Search Box Input */}
-          <div style={{ flex: 1, position: 'relative', maxWidth: '320px' }}>
+          <div style={{ flex: 1, position: 'relative', maxWidth: '280px' }}>
             <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#eff3f4', borderRadius: '9999px', padding: '6px 12px' }}>
               <Search size={16} color="#536471" style={{ flexShrink: 0 }} />
               <input
                 type="text"
                 value={searchQuery}
-                placeholder="Search tweets or @users..."
+                placeholder="Search..."
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   if (activeTag) setActiveTag(null);
@@ -789,7 +854,116 @@ export default function App() {
             )}
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+            {/* Notifications Bell with Badge */}
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={handleToggleNotifications}
+                title="Notifications"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '6px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  color: showNotifications ? '#1d9bf0' : '#0f1419',
+                }}
+              >
+                <Bell size={20} />
+                {unreadCount > 0 && (
+                  <span style={{
+                    position: 'absolute',
+                    top: '2px',
+                    right: '2px',
+                    backgroundColor: '#1d9bf0',
+                    color: '#fff',
+                    borderRadius: '9999px',
+                    fontSize: '10px',
+                    fontWeight: 'bold',
+                    padding: '1px 5px',
+                    lineHeight: '1',
+                  }}>
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notifications Dropdown Panel */}
+              {showNotifications && (
+                <div style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  width: '320px',
+                  marginTop: '8px',
+                  backgroundColor: '#ffffff',
+                  borderRadius: '16px',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                  border: '1px solid #e5e7eb',
+                  overflow: 'hidden',
+                  zIndex: 35,
+                  maxHeight: '400px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}>
+                  <div style={{ padding: '12px 16px', borderBottom: '1px solid #f3f4f6', fontWeight: 'bold', fontSize: '15px' }}>
+                    Notifications
+                  </div>
+
+                  <div style={{ overflowY: 'auto', flex: 1 }}>
+                    {notifications.length === 0 ? (
+                      <p style={{ padding: '24px 16px', textAlign: 'center', color: '#6b7280', fontSize: '13px', margin: 0 }}>
+                        No notifications yet
+                      </p>
+                    ) : (
+                      notifications.map((n) => {
+                        let icon = <Heart size={16} color="#ef4444" fill="#ef4444" />;
+                        let text = 'liked your tweet';
+
+                        if (n.action === 'replied_tweet') {
+                          icon = <MessageCircle size={16} color="#1d9bf0" />;
+                          text = 'replied to your tweet';
+                        } else if (n.action === 'followed_user') {
+                          icon = <UserPlus size={16} color="#10b981" />;
+                          text = 'started following you';
+                        }
+
+                        return (
+                          <div
+                            key={n.id}
+                            onClick={() => {
+                              navigateToProfile(n.actor_username);
+                              setShowNotifications(false);
+                            }}
+                            style={{
+                              padding: '12px 16px',
+                              display: 'flex',
+                              gap: '12px',
+                              alignItems: 'center',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid #f3f4f6',
+                              backgroundColor: n.read ? '#ffffff' : '#f0f9ff',
+                            }}
+                          >
+                            <div style={{ flexShrink: 0 }}>{icon}</div>
+                            <div style={{ flex: 1, fontSize: '13px', lineHeight: '1.4' }}>
+                              <span style={{ fontWeight: 'bold' }}>@{n.actor_username}</span> {text}
+                              <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px' }}>
+                                {new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
               onClick={() => navigateToProfile(currentUser.username)}
@@ -884,7 +1058,7 @@ export default function App() {
         </div>
       ) : (
         <>
-          {/* Feed Tabs: Hidden while actively filtering to avoid state clash */}
+          {/* Feed Tabs */}
           {!activeTag && !searchQuery && (
             <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff' }}>
               <button
@@ -930,7 +1104,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Tweet Composer (Hidden while searching to preserve feed clarity) */}
+          {/* Tweet Composer */}
           {!activeTag && !searchQuery && (
             <form onSubmit={handleCreateTweet} style={{ padding: '16px', borderBottom: '8px solid #f3f4f6' }}>
               <textarea
