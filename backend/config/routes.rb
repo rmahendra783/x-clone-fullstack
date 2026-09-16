@@ -12,6 +12,13 @@ Rails.application.routes.draw do
         end
       end
 
+
+      resources :notifications, only: [:index] do
+        collection do
+          post :mark_as_read
+        end
+      end
+
       get "users/search", to: "users#search"
       get "users/:username", to: "users#show"
       post "users/:username/follow", to: "users#follow"

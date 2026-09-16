@@ -83,6 +83,19 @@ module Api
         if tweet.save
           payload = format_single_tweet(tweet, current_user)
 
+          # Trigger notification if this is a reply to someone else's post
+          if tweet.parent_id.present?
+            parent_tweet = Tweet.find_by(id: tweet.parent_id)
+            if parent_tweet && parent_tweet.user_id != current_user.id
+              Notification.create(
+                recipient: parent_tweet.user,
+                actor: current_user,
+                notifiable: tweet,
+                action: "replied_tweet"
+              )
+            end
+          end
+
           # Real-time WebSocket Broadcast
           ActionCable.server.broadcast("feed_channel", {
             type: tweet.parent_id.present? ? "NEW_REPLY" : "NEW_TWEET",
@@ -125,6 +138,16 @@ module Api
           tweet.likes.create!(user: current_user)
           Tweet.increment_counter(:likes_count, tweet.id)
           liked = true
+
+          # Trigger notification if liking someone else's tweet
+          if tweet.user_id != current_user.id
+            Notification.create(
+              recipient: tweet.user,
+              actor: current_user,
+              notifiable: tweet,
+              action: "liked_tweet"
+            )
+          end
         end
 
         tweet.reload

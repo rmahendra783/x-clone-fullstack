@@ -62,6 +62,14 @@ module Api
         else
           current_user.active_relationships.create!(followed: target_user)
           is_following = true
+
+          # Trigger notification when following someone
+          Notification.create(
+            recipient: target_user,
+            actor: current_user,
+            notifiable: target_user,
+            action: "followed_user"
+          )
         end
 
         render json: {
