@@ -4,8 +4,7 @@ module Api
       wrap_parameters false
       include Rails.application.routes.url_helpers
 
-      before_action :authenticate_request!, only: [:create, :destroy, :like]
-
+      before_action :authenticate_request!, only: [:create, :destroy, :like, :retweet]
       PAGE_SIZE = 10
 
       def index
@@ -38,7 +37,7 @@ module Api
           tweets_scope = tweets_scope.where("tweets.id < ?", params[:cursor].to_i)
         end
 
-        fetched = tweets_scope.includes(:user, :likes)
+        fetched = tweets_scope.includes(:user, :likes, :retweets)
                               .with_attached_image
                               .order(id: :desc)
                               .limit(PAGE_SIZE + 1)
@@ -56,10 +55,10 @@ module Api
 
       # GET /api/v1/tweets/:id
       def show
-        tweet = Tweet.includes(:user, :likes).with_attached_image.find(params[:id])
+        tweet = Tweet.includes(:user, :likes, :retweets).with_attached_image.find(params[:id])
         current_req_user = extract_optional_user
 
-        replies = tweet.replies.includes(:user, :likes)
+        replies = tweet.replies.includes(:user, :likes, :retweets)
                                .with_attached_image
                                .order(created_at: :desc)
 
@@ -79,6 +78,7 @@ module Api
         tweet = current_user.tweets.build(sanitized_params)
         tweet.likes_count = 0
         tweet.replies_count = 0
+        tweet.retweets_count = 0
 
         if tweet.save
           payload = format_single_tweet(tweet, current_user)
@@ -173,6 +173,53 @@ module Api
         render json: { error: "Duplicate action prevented" }, status: :conflict
       end
 
+      # POST /api/v1/tweets/:id/retweet
+      def retweet
+        tweet = Tweet.find(params[:id])
+        existing_retweet = tweet.retweets.find_by(user_id: current_user.id)
+
+        if existing_retweet
+          existing_retweet.destroy
+          Tweet.decrement_counter(:retweets_count, tweet.id)
+          retweeted = false
+        else
+          tweet.retweets.create!(user: current_user)
+          Tweet.increment_counter(:retweets_count, tweet.id)
+          retweeted = true
+
+          # Notify original author if someone else retweets their tweet
+          if tweet.user_id != current_user.id
+            Notification.create(
+              recipient: tweet.user,
+              actor: current_user,
+              notifiable: tweet,
+              action: "retweeted_tweet"
+            )
+          end
+        end
+
+        tweet.reload
+
+        # Broadcast live retweet count update
+        ActionCable.server.broadcast("feed_channel", {
+          type: "RETWEET_UPDATE",
+          tweet_id: tweet.id,
+          retweets_count: tweet.retweets_count,
+          user_id: current_user.id,
+          retweeted: retweeted
+        })
+
+        render json: {
+          id: tweet.id,
+          retweets_count: tweet.retweets_count,
+          retweeted: retweeted
+        }, status: :ok
+      rescue ActiveRecord::RecordNotFound
+        render json: { error: "Tweet not found" }, status: :not_found
+      rescue ActiveRecord::RecordNotUnique
+        render json: { error: "Duplicate action prevented" }, status: :conflict
+      end
+
       private
 
       def tweet_params
@@ -190,8 +237,10 @@ module Api
         end
 
         is_liked = false
+        is_retweeted = false
         if req_user
           is_liked = tweet.likes.any? { |l| l.user_id == req_user.id }
+          is_retweeted = tweet.retweets.any? { |r| r.user_id == req_user.id }
         end
 
         {
@@ -199,11 +248,13 @@ module Api
           content: tweet.content,
           likes_count: tweet.likes_count,
           replies_count: tweet.replies_count,
+          retweets_count: tweet.retweets_count || 0,
           created_at: tweet.created_at,
           username: tweet.username,
           parent_id: tweet.parent_id,
           image_url: image_url,
-          liked_by_current_user: is_liked
+          liked_by_current_user: is_liked,
+          retweeted_by_current_user: is_retweeted
         }
       end
 

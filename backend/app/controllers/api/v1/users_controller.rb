@@ -24,7 +24,7 @@ module Api
         current_req_user = extract_optional_user
 
         user_tweets = user.tweets.root_tweets
-                                 .includes(:likes)
+                                 .includes(:likes, :retweets)
                                  .with_attached_image
                                  .order(id: :desc)
 
@@ -89,11 +89,13 @@ module Api
             content: tweet.content,
             likes_count: tweet.likes_count,
             replies_count: tweet.replies_count,
+            retweets_count: tweet.retweets_count || 0,
             created_at: tweet.created_at,
             username: tweet.username,
             parent_id: tweet.parent_id,
             image_url: image_url,
-            liked_by_current_user: req_user ? tweet.likes.any? { |l| l.user_id == req_user.id } : false
+            liked_by_current_user: req_user ? tweet.likes.any? { |l| l.user_id == req_user.id } : false,
+            retweeted_by_current_user: req_user ? tweet.retweets.any? { |r| r.user_id == req_user.id } : false
           }
         end
       end

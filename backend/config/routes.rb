@@ -9,6 +9,7 @@ Rails.application.routes.draw do
       resources :tweets, only: [:index, :show, :create, :destroy] do
         member do
           post :like
+          post :retweet
         end
       end
 
