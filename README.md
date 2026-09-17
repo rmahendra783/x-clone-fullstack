@@ -111,26 +111,3 @@ npm run dev
 * **Event Propagation in Nested React Trees**: Fixed like toggles inside comment drawers using `e.stopPropagation()` and explicit `type="button"` attributes to eliminate page-reload glitches.
 
 ```
-
-## 🔌 API Endpoints Reference
-
-
-| Method | Endpoint | Description | Auth Required |
-| --- | --- | --- | --- |
-| `POST` | `/api/v1/auth/signup` | Register new account | No |
-| `POST` | `/api/v1/auth/login` | Authenticate and obtain JWT | No |
-| `GET` | `/api/v1/tweets` | Fetch paginated feed (`?cursor=&feed=following`) | Optional |
-| `POST` | `/api/v1/tweets` | Create new tweet/reply (`multipart/form-data`) | Yes |
-| `GET` | `/api/v1/tweets/:id` | Fetch tweet details and thread replies | Optional |
-| `POST` | `/api/v1/tweets/:id/like` | Toggle like status on a tweet/reply | Yes |
-| `DELETE` | `/api/v1/tweets/:id` | Delete tweet (author only) | Yes |
-| `GET` | `/api/v1/users/:username` | Get user profile & posted tweets | Optional |
-| `POST` | `/api/v1/users/:username/follow` | Toggle follow status | Yes |
-
-### ⚡ Real-Time WebSockets (ActionCable)
-
-
-| Protocol | Mount Point | Channel | Description |
-| --- | --- | --- | --- |
-| `WS` | `/cable` | `FeedChannel` | Live stream for new tweets, replies, deletions, and like updates |
-
