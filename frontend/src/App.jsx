@@ -269,6 +269,20 @@ export default function App() {
             });
             return updated;
           });
+        } else if (data.type === 'RETWEET_UPDATE') {
+          const targetId = data.tweet_id;
+          const isCurrentUserAction = currentUser && currentUser.id === data.user_id;
+
+          setTweets((prev) =>
+            prev.map((t) => {
+              if (t.id !== targetId) return t;
+              return {
+                ...t,
+                retweets_count: data.retweets_count,
+                retweeted_by_current_user: isCurrentUserAction ? data.retweeted : t.retweeted_by_current_user,
+              };
+            })
+          );
         } else if (data.type === 'DELETE_TWEET') {
           if (data.parent_id) {
             setTweets((prev) =>
@@ -575,6 +589,51 @@ export default function App() {
       }
     } catch (err) {
       console.error('Error liking tweet:', err);
+    }
+  };
+
+  const handleRetweetTweet = async (e, id) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!token) return alert('Please log in to repost.');
+
+    // Optimistic toggle
+    setTweets((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t;
+        const wasRetweeted = t.retweeted_by_current_user || false;
+        return {
+          ...t,
+          retweeted_by_current_user: !wasRetweeted,
+          retweets_count: wasRetweeted
+            ? Math.max(0, (t.retweets_count || 0) - 1)
+            : (t.retweets_count || 0) + 1,
+        };
+      })
+    );
+
+    try {
+      const res = await fetch(`${BASE_URL}/tweets/${id}/retweet`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Accept': 'application/json' },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setTweets((prev) =>
+          prev.map((t) =>
+            t.id === id
+              ? {
+                  ...t,
+                  retweets_count: data.retweets_count,
+                  retweeted_by_current_user: data.retweeted,
+                }
+              : t
+          )
+        );
+      }
+    } catch (err) {
+      console.error('Error reposting tweet:', err);
     }
   };
 
@@ -929,6 +988,9 @@ export default function App() {
                         } else if (n.action === 'followed_user') {
                           icon = <UserPlus size={16} color="#10b981" />;
                           text = 'started following you';
+                        } else if (n.action === 'retweeted_tweet') {
+                          icon = <Repeat2 size={16} color="#10b981" />;
+                          text = 'reposted your tweet';
                         }
 
                         return (
@@ -1228,6 +1290,7 @@ export default function App() {
         <div>
           {tweets.map((tweet, index) => {
             const isLiked = tweet.liked_by_current_user || false;
+            const isRetweeted = tweet.retweeted_by_current_user || false;
             const isAuthor = currentUser && tweet.username === currentUser.username;
             const isLastItem = index === tweets.length - 1;
             const commentState = commentsMap[tweet.id] || { open: false, loading: false, replies: [], replyText: '' };
@@ -1288,6 +1351,7 @@ export default function App() {
                     )}
 
                     <div style={{ display: 'flex', gap: '32px', color: '#6b7280' }}>
+                      {/* Replies */}
                       <button
                         type="button"
                         onClick={(e) => toggleComments(e, tweet.id)}
@@ -1309,10 +1373,29 @@ export default function App() {
                         {tweet.replies_count || 0}
                       </button>
 
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
-                        <Repeat2 size={16} /> 0
-                      </span>
+                      {/* Repost / Retweet */}
+                      <button
+                        type="button"
+                        onClick={(e) => handleRetweetTweet(e, tweet.id)}
+                        title={isRetweeted ? 'Undo Repost' : 'Repost'}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontSize: '13px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: isRetweeted ? '#10b981' : '#6b7280',
+                          cursor: 'pointer',
+                          padding: 0,
+                          fontWeight: isRetweeted ? '600' : 'normal',
+                        }}
+                      >
+                        <Repeat2 size={16} />
+                        {tweet.retweets_count || 0}
+                      </button>
 
+                      {/* Likes */}
                       <button
                         type="button"
                         onClick={(e) => handleLikeTweet(e, tweet.id)}
